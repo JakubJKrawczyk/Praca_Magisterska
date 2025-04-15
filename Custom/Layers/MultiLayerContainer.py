@@ -1,7 +1,8 @@
+import torch.nn as nn
 
-
-class MultiSequenceContainer:
+class MultiSequenceContainer(nn.Module):
     def __init__(self, sequences):
+        super(MultiSequenceContainer, self).__init__()
         self.sequences = sequences
 
     def forward(self, x):
@@ -19,6 +20,6 @@ class MultiSequenceContainer:
         for layer in self.sequences:
             layer.step(learning_rate)
 
-    def zero_grad(self):
+    def zero_grad(self, **kwargs):
         for layer in self.sequences:
             layer.zero_grad()

@@ -6,18 +6,17 @@ from Custom.Layers.MultiLayerContainer import MultiSequenceContainer
 from Custom.Layers.MultiHeadAttention import MultiHeadAttention
 
 class EEG_class_model(nn.Module):
-    def __init__(self, d_model = 32, *args, **kwargs):
+    def __init__(self, d_model, heads, d_ff, d_dropout, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.model = None
         self.d_model = d_model
-        self.input = InputLayer(batch=128, expected_vector_size=self.d_model)
+        self.input = InputLayer(expected_vector_size=self.d_model)
         self.MultiLayerContainer = MultiSequenceContainer(sequences=[
-            MultiHeadAttention(num_heads=4),
-            FeedForwardNetwork(d_model=self.d_model),
+            MultiHeadAttention(num_heads=heads, d_model=self.d_model),
+            FeedForwardNetwork(d_model=self.d_model, d_ff=d_ff, dropout=d_dropout),
         ])
         self.MultiLayerContainer2 = MultiSequenceContainer(sequences=[
-            MultiHeadAttention(num_heads=4),
-            FeedForwardNetwork(d_model=self.d_model),
+            MultiHeadAttention(num_heads=heads, d_model=self.d_model),
+            FeedForwardNetwork(d_model=self.d_model, d_ff=d_ff, dropout=d_dropout),
         ])
         self.softmax = nn.Softmax(dim=-1)
 

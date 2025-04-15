@@ -1,7 +1,7 @@
 import torch.nn as nn
 
 class FeedForwardNetwork(nn.Module):
-    def __init__(self, d_model, d_ff=2048, dropout=0.1):
+    def __init__(self, d_model, d_ff, dropout):
         super(FeedForwardNetwork, self).__init__()
         self.linear1 = nn.Linear(d_model, d_ff)
         self.dropout = nn.Dropout(dropout)

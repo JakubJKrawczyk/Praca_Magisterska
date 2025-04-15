@@ -3,36 +3,36 @@ from torch import nn, Tensor
 from Custom.Layers.ScaledDotProductAttention import ScaledDotProductAttention
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, num_heads=8):
+    def __init__(self, num_heads, d_model):
         super(MultiHeadAttention, self).__init__()
-        self.d_model = 32*512
         self.num_heads = num_heads
         self.attention = ScaledDotProductAttention(d_model=self.d_model)
         self.layer_norm = nn.LayerNorm(self.d_model)
     def forward(self, X: Tensor):
-        if X.shape != (128, 32, 512):
-            raise Exception("Invalid shape")
+        # tensor wejściowy jest rozmiaru (32, d_model)
         print("MultiHeadAttention: forward...")
-        X.reshape(128, self.d_model)
-        print("MultiHeadAttention: data reshaped")
 
         tensors_to_concat = []
         print("MultiHeadAttention: starting heads loop")
 
         for head in range(self.num_heads):
-            # Wartości Q, K, V dla kolejnej glowy
+            nodeset = []
+            for node in range(X.shape[0]):
 
-            query_projection = nn.Linear(self.d_model, self.d_model)
-            key_projection = nn.Linear(self.d_model, self.d_model)
-            value_projection = nn.Linear(self.d_model, self.d_model)
+                # Wartości Q, K, V dla kolejnej glowy
 
-            Q = query_projection(X)
-            K = key_projection(X)
-            V = value_projection(X)
+                query_projection = nn.Linear(self.d_model, self.d_model)
+                key_projection = nn.Linear(self.d_model, self.d_model)
+                value_projection = nn.Linear(self.d_model, self.d_model)
 
-            # Zastosowanie ScaledDotProductAttention
-            attention = self.attention(Q, K, V)
-            tensors_to_concat.append(attention)
+                Q = query_projection(X[node])
+                K = key_projection(X[node])
+                V = value_projection(X[node])
+
+                # Zastosowanie ScaledDotProductAttention
+                attention = self.attention(Q, K, V)
+                nodeset.append(attention)
+            tensors_to_concat.append(torch.tensor(nodeset, dtype=torch.float32))
 
         print(tensors_to_concat[0].shape)
         print("MultiHeadAttention: tensors to concat collected")
