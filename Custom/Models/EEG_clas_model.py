@@ -7,7 +7,7 @@ from Custom.Layers.MultiHeadAttention import MultiHeadAttention
 
 class EEG_class_model(nn.Module):
     def __init__(self, d_model = 32, *args, **kwargs):
-        super().__init__(*args, **kwargs, heads=8, d_model=32)
+        super().__init__(*args, **kwargs)
         self.model = None
         self.d_model = d_model
         self.input = InputLayer(batch=128, expected_vector_size=self.d_model)

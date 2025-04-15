@@ -7,7 +7,7 @@ class MultiHeadAttention(nn.Module):
         super(MultiHeadAttention, self).__init__()
         self.d_model = 32*512
         self.num_heads = num_heads
-        self.Attention = ScaledDotProductAttention(d_model=self.d_model)
+        self.attention = ScaledDotProductAttention(d_model=self.d_model)
         self.layer_norm = nn.LayerNorm(self.d_model)
     def forward(self, X: Tensor):
         if X.shape != (128, 32, 512):
@@ -31,7 +31,7 @@ class MultiHeadAttention(nn.Module):
             V = value_projection(X)
 
             # Zastosowanie ScaledDotProductAttention
-            attention = self.Attention(Q, K, V)
+            attention = self.attention(Q, K, V)
             tensors_to_concat.append(attention)
 
         print(tensors_to_concat[0].shape)
