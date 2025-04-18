@@ -27,7 +27,7 @@ class EmotionDataset(Dataset):
 
     def tensorize(self):
         # Konwertujemy na tensory
-        emotions_tensor = torch.tensor(self.emotions, dtype=torch.int32)
+        emotions_tensor = torch.tensor(self.emotions, dtype=torch.long)
         values_tensor = torch.tensor(self.values, dtype=torch.float)
         tensor = TensorDataset(emotions_tensor, values_tensor)
         return tensor
