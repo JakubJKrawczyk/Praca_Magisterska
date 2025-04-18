@@ -1,4 +1,6 @@
 from operator import index
+from time import sleep
+
 from Custom.Data.DataHelper import DataHelper, EmotionDataset
 from os import listdir, makedirs
 from os.path import isfile, join, exists
@@ -13,10 +15,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from Trainer import Trainer
+from config import device, num_heads
 
 data_path = "Custom/Data/EEG_data/"
 data_files = [f for f in listdir(data_path) if isfile(join(data_path, f))]
 logger = Logger()
+
+
+
+prepare_process_steps = 9
 
 # Load data
 data_per_user = EmotionDataset([])
@@ -27,15 +34,20 @@ for file in data_files:
     data_per_user.extend(processed_data)
     logger.display_progress(data_files.index(file), len(data_files), "Processing data", f"Processed {file}")
 
+logger.display_progress(1, prepare_process_steps, "Preparing for training", f"Tensor dataset creating...")
 print("Utworzony Tensor Dataset")
 tensor_dataset = data_per_user.tensorize()  # Zwraca TensorDataset
 print(tensor_dataset.tensors)
+
+logger.display_progress(2, prepare_process_steps, "Preparing for training", f"Splitting dataset on labels and values...")
 
 # Rozdziel dane na emocje (etykiety) i wartości EEG (cechy)
 emotion_ids = tensor_dataset.tensors[0]  # Pierwszy tensor to ID emocji
 eeg_values = tensor_dataset.tensors[1]   # Drugi tensor to wartości EEG
 
 print(f"Liczba wszystkich próbek: {len(emotion_ids)}")
+
+logger.display_progress(3, prepare_process_steps, "Preparing for training", f"Splitting dataset on training and testing dataset...")
 
 # Podział na zbiory treningowe i testowe w proporcji 9:1
 train_size = int(0.9 * len(emotion_ids))
@@ -51,23 +63,39 @@ train_dataset, test_dataset = random_split(
 print(f"Liczba próbek treningowych: {len(train_dataset)}")
 print(f"Liczba próbek testowych: {len(test_dataset)}")
 
+logger.display_progress(4, prepare_process_steps, "Preparing for training", f"Preparing dataloader...")
+
 # Utworzenie DataLoader dla łatwiejszego przetwarzania podczas treningu
-batch_size = 32
+batch_size = 5000
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
+
+logger.display_progress(5, prepare_process_steps, "Preparing for training", f"Creating model...")
+
+
 print("\n\nSekcja modelu")
 print("Tworzenie obiektu modelu")
-model = EEG_class_model(d_model=len(data_per_user.values))
+
+dropout = 0.1
+d_ff = 0.0001
+d_model = 512  # Rozmiar wektora wejściowego
+
+
+model = EEG_class_model(d_model=d_model, heads=num_heads, d_dropout=dropout, num_classes=7)
 print("Model stworzony........")
 
+logger.display_progress(6, prepare_process_steps, "Preparing for training", f"Selecting device...")
 # Konfiguracja treningu
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Używane urządzenie: {device}")
-model = model.to(device)
+
+model.to(device)
+logger.display_progress(7, prepare_process_steps, "Preparing for training", f"Choosing criterion...")
 
 # Kryterium oceny - dla klasyfikacji używamy Cross Entropy Loss
 criterion = nn.CrossEntropyLoss()
+
+logger.display_progress(8, prepare_process_steps, "Preparing for training", f"Defining parameters...")
 
 # Definicja parametrów optymalizatora ADAM
 learning_rate = 0.001        # Szybkość uczenia
@@ -75,6 +103,8 @@ beta1 = 0.9                  # Współczynnik beta1 dla średnich pierwszego rz�
 beta2 = 0.999                # Współczynnik beta2 dla średnich drugiego rzędu
 epsilon = 1e-08              # Wartość epsilon dla stabilności numerycznej
 weight_decay = 0.0001        # Regularyzacja L2 (decay wag)
+
+logger.display_progress(9, prepare_process_steps, "Preparing for training", f"Creating optimizer...")
 
 # Optymalizator ADAM z parametrami - przekazujemy wszystkie parametry modelu
 optimizer = optim.Adam(
@@ -95,6 +125,8 @@ train_losses, train_accuracies = trainer.train_model(model, train_loader, criter
 # Ewaluacja modelu
 print("Ewaluacja modelu...")
 test_loss, test_accuracy = trainer.evaluate_model(model, test_loader, criterion)
+
+logger.display_progress(10, prepare_process_steps, "Saving model....", f"Saving...")
 
 # Zapisanie modelu z nazwą zawierającą datę
 current_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -135,5 +167,8 @@ plt.ylabel('Dokładność (%)')
 plt.tight_layout()
 plt.savefig(join(save_dir, "training_metrics.png"))
 plt.show()
+
+logger.display_progress(11, prepare_process_steps, "Finishing....")
+sleep(1)
 
 print(f"Końcowa dokładność na zbiorze testowym: {test_accuracy:.2f}%")

@@ -9,7 +9,7 @@ class ScaledDotProductAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, q, k, v):
-        first = torch.matmul(q, k.transpose(1, 2))
+        first = torch.matmul(q, k.transpose(0,1))
         second = first / self.sqrt_d_model
         third = F.softmax(second, dim=-1)
         fourth = self.dropout(third)

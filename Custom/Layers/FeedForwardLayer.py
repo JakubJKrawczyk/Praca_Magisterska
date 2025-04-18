@@ -1,13 +1,16 @@
 import torch.nn as nn
 
+from config import device
+
+
 class FeedForwardNetwork(nn.Module):
-    def __init__(self, d_model, d_ff, dropout):
+    def __init__(self, d_model, dropout):
         super(FeedForwardNetwork, self).__init__()
-        self.linear1 = nn.Linear(d_model, d_ff)
+        self.linear1 = nn.Linear(d_model, d_model, device=device)
         self.dropout = nn.Dropout(dropout)
-        self.linear2 = nn.Linear(d_ff, d_model)
+        self.linear2 = nn.Linear(d_model, d_model, device=device)
         self.relu = nn.ReLU()
-        self.layerNorm = nn.LayerNorm(d_model)
+        self.layerNorm = nn.LayerNorm(d_model, device=device)
     def forward(self, x):
         start = x
         x = self.linear1(x)

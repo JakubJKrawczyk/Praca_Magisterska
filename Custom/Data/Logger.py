@@ -33,7 +33,7 @@ class Logger:
             header (str): Nagłówek wyświetlany przed paskiem
             additional_text (str): Dodatkowy tekst wyświetlany pod paskiem
         """
-        self.clear_console()
+        os.system("clear")
 
         # Zabezpieczenie przed wartościami ujemnymi i dzieleniem przez zero
         current = max(0, current)
