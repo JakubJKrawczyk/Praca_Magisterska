@@ -10,9 +10,9 @@ def expand_value_sinusoidal(input_tensor: torch.Tensor, d_model: int) -> torch.T
         raise Exception("Input tensor is NONE")
 
     # Sprawdzamy czy mamy batch czy pojedynczy przykład
-    is_batch = input_tensor.dim() == 2
+    is_batch = input_tensor.dim() == 3
     
-    if is_batch:
+    if not is_batch:
         # Pojedynczy przykład (seq_len, features)
         num_sensors = input_tensor.shape[0]  # seq_len
         
@@ -36,7 +36,7 @@ def expand_value_sinusoidal(input_tensor: torch.Tensor, d_model: int) -> torch.T
     else:
         # Batch (batch_size, seq_len, features)
         batch_size = input_tensor.shape[0]
-        num_sensors = input_tensor.shape[1]  # seq_len
+        seq_len = input_tensor.shape[1]  # seq_len
         
         # Przetwarzamy każdy przykład w batchu osobno
         outputs = []
@@ -55,7 +55,7 @@ def expand_value_sinusoidal(input_tensor: torch.Tensor, d_model: int) -> torch.T
             cos_embed = torch.cos(sinusoid_input)
             
             # Tworzymy pusty tensor i przeplatamy sinusoidy
-            output = torch.zeros(num_sensors, d_model, dtype=torch.float32).to(input_tensor.device)
+            output = torch.zeros(seq_len, d_model, dtype=torch.float32).to(input_tensor.device)
             output[..., 0::2] = sin_embed
             output[..., 1::2] = cos_embed
             
@@ -71,7 +71,13 @@ class InputLayer(nn.Module):
         self.size = expected_vector_size
         self.expand_values = expand_value_sinusoidal
     def forward(self, x):
+        # Print shape for debugging
+        print(f"Input shape: {x.shape}")
+        
         result = self.expand_values(x, self.size)
+        
+        # Print result shape for debugging
+        print(f"Output shape: {result.shape}")
         
         # Sprawdzamy kształt wyniku w zależności od tego czy mamy batch czy pojedynczy przykład
         if x.dim() == 2:  # Pojedynczy przykład
