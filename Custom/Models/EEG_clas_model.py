@@ -26,46 +26,35 @@ class EEG_class_model(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x: Tensor):
-        # Przetwarzamy dane wejściowe
-        x = self.input(x)
+        # Przetwarzamy dane wejściowe przez warstwę wejściową
+        # x ma kształt [batch_size, features]
+        x = self.input(x)  # Teraz x ma kształt [batch_size, d_model]
         
-        # Jeśli mamy batch, przetwarzamy każdy przykład osobno
-        if x.dim() == 3:  # [batch_size, seq_len, d_model]
-            batch_size = x.size(0)
-            outputs = []
+        # Dla każdego przykładu w batchu
+        batch_size = x.size(0)
+        outputs = []
+        
+        for i in range(batch_size):
+            # Pobierz pojedynczy wektor cech
+            single_x = x[i].unsqueeze(0)  # [1, d_model]
             
-            for i in range(batch_size):
-                # Przetwarzanie pojedynczego przykładu
-                single_x = x[i]  # [seq_len, d_model]
-                single_x = self.MultiLayerContainer.forward(single_x)
-                single_x = self.MultiLayerContainer2.forward(single_x)
-                
-                # Użycie zdefiniowanych parametrów
-                single_x = single_x * self.scaling_factor
-                
-                # Uśredniamy reprezentacje sekwencji
-                single_x_mean = single_x.mean(dim=0, keepdim=True)  # [1, d_model]
-                
-                # Klasyfikacja
-                logits = torch.matmul(single_x_mean, self.class_weights) + self.bias  # [1, num_classes]
-                outputs.append(logits)
-            
-            # Łączymy wyniki dla całego batcha
-            return torch.cat(outputs, dim=0)  # [batch_size, num_classes]
-        else:
-            # Przetwarzanie pojedynczego przykładu (gdy x ma kształt [seq_len, d_model])
-            x = self.MultiLayerContainer.forward(x)
-            x = self.MultiLayerContainer2.forward(x)
+            # Przetwarzanie przez warstwy transformera
+            # Uwaga: MultiLayerContainer oczekuje wejścia [seq_len, d_model]
+            # Tutaj seq_len = 1, więc możemy użyć bezpośrednio
+            single_x = self.MultiLayerContainer.forward(single_x)
+            single_x = self.MultiLayerContainer2.forward(single_x)
             
             # Użycie zdefiniowanych parametrów
-            x = x * self.scaling_factor
-
-        # Uśredniamy reprezentacje sekwencji
-        # x ma kształt [seq_len, d_model]
-        x_mean = x.mean(dim=0, keepdim=True)  # [1, d_model]
+            single_x = single_x * self.scaling_factor
+            
+            # Klasyfikacja (single_x już ma kształt [1, d_model])
+            logits = torch.matmul(single_x, self.class_weights) + self.bias  # [1, num_classes]
+            outputs.append(logits)
         
-        # Klasyfikacja na podstawie uśrednionej reprezentacji
-        logits = torch.matmul(x_mean, self.class_weights) + self.bias  # [1, num_classes]
+        # Łączymy wyniki dla całego batcha
+        return torch.cat(outputs, dim=0)  # [batch_size, num_classes]
 
+        # Ta część nie będzie używana, ponieważ zawsze przetwarzamy dane jako batch
+        # Ale zostawiamy ją dla kompatybilności
         x = self.softmax(logits)
         return x

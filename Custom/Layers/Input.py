@@ -9,60 +9,46 @@ def expand_value_sinusoidal(input_tensor: torch.Tensor, d_model: int) -> torch.T
     if input_tensor is None:
         raise Exception("Input tensor is NONE")
 
-    # Sprawdzamy czy mamy batch czy pojedynczy przykład
-    is_batch = input_tensor.dim() == 3
+    # Sprawdzamy wymiary tensora wejściowego
+    print(f"Input tensor shape in expand_value_sinusoidal: {input_tensor.shape}")
     
-    if not is_batch:
-        # Pojedynczy przykład (seq_len, features)
-        num_sensors = input_tensor.shape[0]  # seq_len
+    # Dla danych w kształcie [batch_size, features]
+    if len(input_tensor.shape) == 2:
+        batch_size, features = input_tensor.shape
         
-        # Częstotliwości dla sinusoid
-        position = input_tensor.unsqueeze(-1)  # (seq_len, features, 1)
-        div_term = torch.exp(
-            torch.arange(0, d_model, 2, dtype=torch.float32) * -(math.log(10000.0) / d_model)
-        ).to(input_tensor.device)  # (d_model/2)
+        # Przygotuj tensor wyjściowy
+        output = torch.zeros(batch_size, d_model, dtype=torch.float32, device=input_tensor.device)
         
-        # Obliczamy sinusoidalne kodowanie
-        sinusoid_input = position * div_term  # (seq_len, features, d_model/2)
-        sin_embed = torch.sin(sinusoid_input)
-        cos_embed = torch.cos(sinusoid_input)
-        
-        # Tworzymy pusty tensor i przeplatamy sinusoidy
-        output = torch.zeros(num_sensors, d_model, dtype=torch.float32).to(input_tensor.device)
-        output[..., 0::2] = sin_embed
-        output[..., 1::2] = cos_embed
-        
+        # Dla każdej próbki w batchu
+        for i in range(batch_size):
+            # Pobierz wektor cech dla jednej próbki
+            sample = input_tensor[i]  # [features]
+            
+            # Rozszerz do wymiaru [features, 1]
+            position = sample.unsqueeze(-1)
+            
+            # Oblicz współczynniki dla kodowania sinusoidalnego
+            div_term = torch.exp(
+                torch.arange(0, d_model, 2, dtype=torch.float32, device=input_tensor.device) * 
+                -(math.log(10000.0) / d_model)
+            )
+            
+            # Oblicz kodowanie sinusoidalne
+            sinusoid_input = position * div_term  # [features, d_model/2]
+            sin_values = torch.sin(sinusoid_input)
+            cos_values = torch.cos(sinusoid_input)
+            
+            # Uśrednij wartości po wszystkich cechach
+            sin_mean = sin_values.mean(dim=0)  # [d_model/2]
+            cos_mean = cos_values.mean(dim=0)  # [d_model/2]
+            
+            # Przepleć wartości sin i cos
+            output[i, 0::2] = sin_mean
+            output[i, 1::2] = cos_mean
+            
         return output
     else:
-        # Batch (batch_size, seq_len, features)
-        batch_size = input_tensor.shape[0]
-        seq_len = input_tensor.shape[1]  # seq_len
-        
-        # Przetwarzamy każdy przykład w batchu osobno
-        outputs = []
-        for i in range(batch_size):
-            single_input = input_tensor[i]  # (seq_len, features)
-            
-            # Częstotliwości dla sinusoid
-            position = single_input.unsqueeze(-1)  # (seq_len, features, 1)
-            div_term = torch.exp(
-                torch.arange(0, d_model, 2, dtype=torch.float32) * -(math.log(10000.0) / d_model)
-            ).to(input_tensor.device)  # (d_model/2)
-            
-            # Obliczamy sinusoidalne kodowanie
-            sinusoid_input = position * div_term  # (seq_len, features, d_model/2)
-            sin_embed = torch.sin(sinusoid_input)
-            cos_embed = torch.cos(sinusoid_input)
-            
-            # Tworzymy pusty tensor i przeplatamy sinusoidy
-            output = torch.zeros(seq_len, d_model, dtype=torch.float32).to(input_tensor.device)
-            output[..., 0::2] = sin_embed
-            output[..., 1::2] = cos_embed
-            
-            outputs.append(output)
-        
-        # Łączymy wyniki dla całego batcha
-        return torch.stack(outputs)  # (batch_size, seq_len, d_model)
+        raise ValueError(f"Nieobsługiwany kształt tensora wejściowego: {input_tensor.shape}")
 
 
 class InputLayer(nn.Module):
@@ -70,23 +56,15 @@ class InputLayer(nn.Module):
         super(InputLayer, self).__init__()
         self.size = expected_vector_size
         self.expand_values = expand_value_sinusoidal
+        
     def forward(self, x):
         # Print shape for debugging
         print(f"Input shape: {x.shape}")
         
+        # Przetwarzamy dane wejściowe
         result = self.expand_values(x, self.size)
         
         # Print result shape for debugging
         print(f"Output shape: {result.shape}")
         
-        # Sprawdzamy kształt wyniku w zależności od tego czy mamy batch czy pojedynczy przykład
-        if x.dim() == 2:  # Pojedynczy przykład
-            if result.shape[1] == self.size:
-                return result
-            else:
-                raise Exception(f"Invalid shape: expected second dimension to be {self.size}, got {result.shape}")
-        else:  # Batch
-            if result.shape[2] == self.size:
-                return result
-            else:
-                raise Exception(f"Invalid shape: expected third dimension to be {self.size}, got {result.shape}")
+        return result
