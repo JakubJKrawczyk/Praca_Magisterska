@@ -26,16 +26,17 @@ class EEG_class_model(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x: Tensor):
-        # Jeśli x ma kształt [batch_size, seq_len, features]
-        # Przetwarzamy każdy przykład w batchu osobno
-        if x.dim() == 3:
+        # Przetwarzamy dane wejściowe
+        x = self.input(x)
+        
+        # Jeśli mamy batch, przetwarzamy każdy przykład osobno
+        if x.dim() == 3:  # [batch_size, seq_len, d_model]
             batch_size = x.size(0)
             outputs = []
             
             for i in range(batch_size):
                 # Przetwarzanie pojedynczego przykładu
-                single_x = x[i]  # [seq_len, features]
-                single_x = self.input(single_x)
+                single_x = x[i]  # [seq_len, d_model]
                 single_x = self.MultiLayerContainer.forward(single_x)
                 single_x = self.MultiLayerContainer2.forward(single_x)
                 
@@ -52,8 +53,7 @@ class EEG_class_model(nn.Module):
             # Łączymy wyniki dla całego batcha
             return torch.cat(outputs, dim=0)  # [batch_size, num_classes]
         else:
-            # Przetwarzanie pojedynczego przykładu (gdy x ma kształt [seq_len, features])
-            x = self.input(x)
+            # Przetwarzanie pojedynczego przykładu (gdy x ma kształt [seq_len, d_model])
             x = self.MultiLayerContainer.forward(x)
             x = self.MultiLayerContainer2.forward(x)
             
