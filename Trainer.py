@@ -26,46 +26,32 @@ class Trainer:
             epoch_accuracy = 0.0
 
             # Poprawiona kolejność rozpakowania danych z data loadera
-            for i, (labels,inputs) in enumerate(train_loader):
+            for i, (labels, inputs) in enumerate(train_loader):
                 inputs, labels = inputs.to(self.device), labels.to(self.device)
-
-                # Iteracja po każdym przykładzie w batchu
-                for j in range(labels.size(0)):
-                    # Pobierz pojedynczy przykład
-                    single_input = inputs[j]  # Tensor o kształcie [32, d_model]
-                    single_label = labels[j]  # Skalar, np. 0, 1, 2...
-
-                    # Zerowanie gradientów
-                    optimizer.zero_grad()
-
-                    # Forward pass
-                    output = model(single_input)  # Powinno zwrócić [7] - logity dla każdej klasy
-
-                    # Przygotuj etykietę w formie wymaganej przez criterion
-                    # Przekształć skalar na tensor o wymiarze [1]
-                    target = single_label.long()  # Konwersja na Long
-
-                    # Dodaj wymiar batcha do output jeśli potrzeba
-                    if len(output.shape) == 1:  # Jeśli output ma kształt [7]
-                        output = output.unsqueeze(0)  # Zmień na [1, 7]
-
-                    # Sprawdź kształty przed obliczeniem straty
-
-                    # Oblicz stratę
-                    loss = criterion(output, target.unsqueeze(0))
-
-                    # Backward pass i optymalizacja
-                    loss.backward()
-                    optimizer.step()
-                    print(f"Loss: {loss.item()}")
-                    # Statystyki
-                    running_loss += loss.item()
-                    _, predicted = torch.max(output.data, 1)
-                    total += 1
-                    if predicted == target:
-                        correct += 1
-
-                    self.logger.display_progress(j, inputs.size(0), "Training...", f"Sample {j+1}/{inputs.size(0)} Epoch {epoch+1}/{num_epochs} loss: {loss.item():.4f} Previous epoch loss: {epoch_loss:.5f} Accuracy: {epoch_accuracy:.5f}%")
+                
+                # Zerowanie gradientów
+                optimizer.zero_grad()
+                
+                # Forward pass - przetwarzamy cały batch naraz
+                outputs = model(inputs)  # Powinno zwrócić [batch_size, num_classes]
+                
+                # Oblicz stratę dla całego batcha
+                loss = criterion(outputs, labels)
+                
+                # Backward pass i optymalizacja
+                loss.backward()
+                optimizer.step()
+                
+                # Statystyki
+                running_loss += loss.item() * labels.size(0)
+                _, predicted = torch.max(outputs.data, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+                
+                self.logger.display_progress(i, len(train_loader), "Training...", 
+                                            f"Batch {i+1}/{len(train_loader)} Epoch {epoch+1}/{num_epochs} "
+                                            f"loss: {loss.item():.4f} Previous epoch loss: {epoch_loss:.5f} "
+                                            f"Accuracy: {epoch_accuracy:.5f}%")
                 # Wyświetl postęp po każdym batchu
 
                 print(f'Epoka [{epoch+1}/{num_epochs}], Batch [{i+1}/{len(train_loader)}], '
@@ -96,7 +82,7 @@ class Trainer:
         with torch.no_grad():
             for labels, inputs in test_loader:
 
-                self.logger.display_progress(test_loader.indexOf(labels), len(test_loader), "Evaluating...", f"Batch {test_loader.indexOf(labels)}/{len(test_loader)}")
+                self.logger.display_progress(total // labels.size(0), len(test_loader), "Evaluating...", f"Batch {total // labels.size(0)}/{len(test_loader)}")
                 sleep(0.5)
 
                 inputs, labels = inputs.to(self.device), labels.to(self.device)
