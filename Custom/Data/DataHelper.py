@@ -26,9 +26,9 @@ class EmotionDataset(Dataset):
             self.values.append(emotion_array["value"])
 
     def tensorize(self):
-        # Konwertujemy na tensory - najpierw konwertujemy do numpy array dla lepszej wydajności
-        emotions_tensor = torch.tensor(np.array(self.emotions), dtype=torch.long)
-        values_tensor = torch.tensor(np.array(self.values), dtype=torch.float)
+        # Konwertujemy na tensory
+        emotions_tensor = torch.tensor(self.emotions, dtype=torch.long)
+        values_tensor = torch.tensor(self.values, dtype=torch.float)
         tensor = TensorDataset(emotions_tensor, values_tensor)
         return tensor
 

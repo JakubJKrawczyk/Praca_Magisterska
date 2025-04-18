@@ -26,35 +26,19 @@ class EEG_class_model(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x: Tensor):
-        # Przetwarzamy dane wejściowe przez warstwę wejściową
-        # x ma kształt [batch_size, features]
-        x = self.input(x)  # Teraz x ma kształt [batch_size, d_model]
-        
-        # Dla każdego przykładu w batchu
-        batch_size = x.size(0)
-        outputs = []
-        
-        for i in range(batch_size):
-            # Pobierz pojedynczy wektor cech
-            single_x = x[i].unsqueeze(0)  # [1, d_model]
-            
-            # Przetwarzanie przez warstwy transformera
-            # Uwaga: MultiLayerContainer oczekuje wejścia [seq_len, d_model]
-            # Tutaj seq_len = 1, więc możemy użyć bezpośrednio
-            single_x = self.MultiLayerContainer.forward(single_x)
-            single_x = self.MultiLayerContainer2.forward(single_x)
-            
-            # Użycie zdefiniowanych parametrów
-            single_x = single_x * self.scaling_factor
-            
-            # Klasyfikacja (single_x już ma kształt [1, d_model])
-            logits = torch.matmul(single_x, self.class_weights) + self.bias  # [1, num_classes]
-            outputs.append(logits)
-        
-        # Łączymy wyniki dla całego batcha
-        return torch.cat(outputs, dim=0)  # [batch_size, num_classes]
+        x = self.input(x)
+        x = self.MultiLayerContainer.forward(x)
+        x = self.MultiLayerContainer2.forward(x)
 
-        # Ta część nie będzie używana, ponieważ zawsze przetwarzamy dane jako batch
-        # Ale zostawiamy ją dla kompatybilności
+        # Użycie zdefiniowanych parametrów
+        x = x * self.scaling_factor
+
+        # Przykład użycia parametrów do klasyfikacji
+        # Zakładając, że x ma wymiar [batch_size, d_model]
+        # możemy użyć parametrów do klasyfikacji
+        logits = torch.matmul(x, self.class_weights) + self.bias
+
+        logits = logits.mean(dim=0, keepdim=True)
+
         x = self.softmax(logits)
         return x
