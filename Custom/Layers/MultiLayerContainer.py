@@ -1,26 +1,85 @@
-import torch.nn as nn
-from pyarrow import Tensor
+import torch
+from torch import nn
+
+from Custom.Layers.FeedForwardLayer import FeedForwardNetwork
+from Custom.Layers.MultiHeadAttention import MultiHeadAttention
 
 
-class MultiSequenceContainer(nn.Module):
-    def __init__(self, layers):
-        super(MultiSequenceContainer, self).__init__()
-        self.layers = layers
+class EncoderLayer(nn.Module):
+    """
+    Pojedyncza warstwa enkodera zawierająca MultiHeadAttention i FeedForwardNetwork.
 
-    def forward(self, x: Tensor):
-        for layer in self.layers:
-            x = layer.forward(x)
+    Args:
+        d_model (int): Wymiar modelu
+        num_heads (int): Liczba głowic uwagi
+        d_ff (int, optional): Wymiar wewnętrzny sieci FFN
+        dropout (float, optional): Współczynnik dropout
+    """
+    def __init__(self, d_model, num_heads, d_ff=None, dropout=0.1):
+        super(EncoderLayer, self).__init__()
+
+        # MultiHeadAttention
+        self.self_attention = MultiHeadAttention(num_heads, d_model, dropout)
+
+        # FeedForwardNetwork
+        self.feed_forward = FeedForwardNetwork(d_model, d_ff, dropout)
+
+    def forward(self, x):
+        """
+        Przetwarza tensor wejściowy przez warstwę enkodera.
+
+        Args:
+            x (torch.Tensor): Tensor wejściowy o kształcie (batch_size, num_nodes, d_model)
+
+        Returns:
+            torch.Tensor: Tensor wyjściowy o kształcie (batch_size, num_nodes, d_model)
+        """
+        # Przetwarzanie przez mechanizm uwagi
+        x = self.self_attention(x)
+
+        # Przetwarzanie przez sieć feed-forward
+        x = self.feed_forward(x)
+
         return x
 
-    def backward(self, dLdy):
-        for layer in reversed(self.layers):
-            dLdy = layer.backward(dLdy)
-        return dLdy
+class TransformerEncoder(nn.Module):
+    """
+    Pełny enkoder transformera składający się z kilku warstw.
 
-    def step(self, learning_rate):
-        for layer in self.layers:
-            layer.step(learning_rate)
+    Args:
+        d_model (int): Wymiar modelu
+        num_heads (int): Liczba głowic uwagi
+        num_layers (int): Liczba warstw enkodera
+        d_ff (int, optional): Wymiar wewnętrzny sieci FFN
+        dropout (float, optional): Współczynnik dropout
+    """
+    def __init__(self, d_model, num_heads, num_layers, d_ff=None, dropout=0.1):
+        super(TransformerEncoder, self).__init__()
 
-    def zero_grad(self, **kwargs):
+        # Tworzenie listy warstw enkodera
+        self.layers = nn.ModuleList([
+            EncoderLayer(d_model, num_heads, d_ff, dropout)
+            for _ in range(num_layers)
+        ])
+
+        # Końcowa normalizacja warstwy
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        """
+        Przetwarza tensor wejściowy przez cały enkoder.
+
+        Args:
+            x (torch.Tensor): Tensor wejściowy o kształcie (batch_size, num_nodes, d_model)
+
+        Returns:
+            torch.Tensor: Tensor wyjściowy o kształcie (batch_size, num_nodes, d_model)
+        """
+        # Przetwarzanie przez każdą warstwę enkodera
         for layer in self.layers:
-            layer.zero_grad()
+            x = layer(x)
+
+        # Końcowa normalizacja
+        x = self.norm(x)
+
+        return x

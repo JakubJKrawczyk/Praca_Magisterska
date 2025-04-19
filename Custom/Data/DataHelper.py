@@ -1,21 +1,24 @@
 from operator import contains, indexOf
-
 import scipy.io as sio
 import torch
 from pandas.core.interchange.utils import dtype_to_arrow_c_fmt
 from torch.utils.data import Dataset
-import torch
 import numpy as np
 from torch.utils.data import TensorDataset, DataLoader
 
-# Tworzymy własną klasę Dataset, która zachowa powiązanie
-# między etykietami a wartościami
 class EmotionDataset(Dataset):
+    """
+    Dataset przechowujący dane EEG wraz z etykietami emocji.
+
+    Każdy element datasetu to para (emotion_id, electrode_values), gdzie:
+    - emotion_id: identyfikator emocji (0-6)
+    - electrode_values: tensor o wymiarze (32,) zawierający wartości z 32 elektrod
+    """
     def __init__(self, emotion_data:[{int, np.ndarray}]):
         self.emotions = []
         self.values = []
         self.idx_to_emotion = {}
-        # print(emotion_data[0].keys())
+
         # Przypisujemy indeksy do emocji
         for idx, emotion_array in enumerate(emotion_data):
             self.idx_to_emotion[idx] = emotionsEnum[emotion_array["emotion_id"]]
@@ -25,12 +28,30 @@ class EmotionDataset(Dataset):
             self.emotions.append(emotion_array["emotion_id"])
             self.values.append(emotion_array["value"])
 
+        # Wyświetlenie informacji o danych
+        if len(self.values) > 0:
+            print(f"EmotionDataset created with {len(self.emotions)} samples")
+            print(f"Each sample contains values from 32 electrodes: {len(self.values[0])}")
+
     def tensorize(self):
+        """
+        Konwertuje dane na tensory PyTorch i zwraca TensorDataset.
+
+        Returns:
+            TensorDataset: Dataset zawierający parę tensorów (emotions, values)
+                emotions: tensor o wymiarze (n_samples,) - identyfikatory emocji
+                values: tensor o wymiarze (n_samples, 32) - wartości z elektrod
+        """
         # Konwertujemy na tensory
         emotions_tensor = torch.tensor(self.emotions, dtype=torch.long)
         values_tensor = torch.tensor(self.values, dtype=torch.float)
-        tensor = TensorDataset(emotions_tensor, values_tensor)
-        return tensor
+
+
+# Sprawdzenie wymiarów
+        print(f"Tensors created: emotions {emotions_tensor.shape}, values {values_tensor.shape}")
+
+        # Tworzenie TensorDataset
+        return TensorDataset(values_tensor, emotions_tensor)
 
     def __len__(self):
         return len(self.emotions)
@@ -39,6 +60,12 @@ class EmotionDataset(Dataset):
         return self.idx_to_emotion[idx]
 
     def extend(self, other):
+        """
+        Rozszerza dataset o dane z innego EmotionDataset.
+
+        Args:
+            other (EmotionDataset): Dataset do dodania
+        """
         if isinstance(other, EmotionDataset):
             self.emotions.extend(other.emotions)
             self.values.extend(other.values)
@@ -46,10 +73,11 @@ class EmotionDataset(Dataset):
             for emotion in other.idx_to_emotion.values():
                 self.idx_to_emotion[incrementer] = emotion
                 incrementer += 1
-
         else:
             raise TypeError("Can only add another EmotionDataset instance.")
 
+
+# Mapowanie ID emocji na nazwy
 emotionsEnum = {
     0: "Neutral",
     1: "Happy",
@@ -60,6 +88,7 @@ emotionsEnum = {
     6: "Disgust"
 }
 
+# Mapowanie ID wideo na emocje
 VideoIdToEmotionMap = {
     # Sesja 1 (1-20)
     1: 1,  # Happy
@@ -147,12 +176,19 @@ VideoIdToEmotionMap = {
     80: 6   # Disgust
 }
 
-
-
 class DataHelper:
     @staticmethod
-    # Wczytywanie pliku .mat
     def load_mat_file(file_path, lds=False):
+        """
+        Wczytuje dane z pliku .mat.
+
+        Args:
+            file_path (str): Ścieżka do pliku .mat
+            lds (bool): Czy filtrować tylko klucze zawierające "LDS"
+
+        Returns:
+            dict: Słownik zawierający dane z pliku .mat
+        """
         mat_data = sio.loadmat(file_path)
 
         if lds:
@@ -163,54 +199,65 @@ class DataHelper:
             return processed
         return mat_data
 
-
-
-
     @staticmethod
-    # Wyświetlanie zawartości pliku .mat
     def print_mat_content(mat_data):
+        """
+        Wyświetla informacje o zawartości pliku .mat.
+
+        Args:
+            mat_data (dict): Słownik z danymi z pliku .mat
+        """
         print("Klucze w pliku .mat:")
         for key in mat_data.keys():
             if not key.startswith('__'):  # Pomijamy klucze systemowe
-                 print(f"Klucz: {key}, Typ: {type(mat_data[key])}, Kształt: {mat_data[key].shape}")
+                print(f"Klucz: {key}, Typ: {type(mat_data[key])}, Kształt: {mat_data[key].shape}")
         first = list(mat_data.values())[0]
-        print(f"\nPrzykładowa zawartość klucza {first}:")
-    # Prztworzyć dane od sond tylko:
-    # 1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32,
-    # 34, 36, 38, 40, 42, 44, 46, 48, 50, 53, 54, 55, 59, 60, 61
+        print(f"\nPrzykładowa zawartość klucza {list(mat_data.keys())[0]}:")
 
     @staticmethod
-    # przetwarzanie wczytanych danych pod model
-    # dane w formie (x, 5, 62) przerobić na (x,5,32)
     def prepare_data(data) -> EmotionDataset:
-        # DataHelper.print_mat_content(data)
+        """
+        Przetwarza dane z pliku .mat do formatu wymaganego przez model.
+
+        Dane o początkowym kształcie (x, 5, 62) są filtrowane do 32 elektrod
+        i przekształcane do formatu (n_samples, 32), gdzie n_samples = x * 5.
+
+        Args:
+            data (dict): Słownik z danymi z pliku .mat
+
+        Returns:
+            EmotionDataset: Dataset zawierający przetworzone dane
+        """
+        # Indeksy elektrod do zachowania (32 z 62)
         indices = [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32,
                    34, 36, 38, 40, 42, 44, 46, 48, 50, 53, 54, 55, 59]
 
+        # Filtrujemy dane do wybranych elektrod
         processed_data = {}
         for key, array in data.items():
+            # Wybieramy tylko 32 elektrody z 62
             processed_data[key] = array[:, :, indices]
-            # print(f"Klucz: {key}, Nowy kształt: {processed_data[key].shape}")
-            # print(processed_data[key][0])
+            print(f"Klucz: {key}, Oryginalny kształt: {array.shape}, Nowy kształt: {processed_data[key].shape}")
 
+        # Przygotowanie danych w formie listy słowników
         post_processed_data = []
         for key, array in processed_data.items():
             if contains(key, "LDS"):
                 try:
+                    # Ekstrakcja numeru wideo z klucza
                     number = int(key.split("_")[2])
+                    # Mapowanie numeru wideo na emocję
                     emotion = VideoIdToEmotionMap[number]
                     if number:
+                        # Dla każdego pomiaru w wymiarach (x, 5)
                         for i in range(array.shape[0]):
                             for j in range(array.shape[1]):
+                                # Tworzymy wpis dla każdej kombinacji
                                 entry = {"emotion_id": emotion, "value": array[i][j]}
                                 post_processed_data.append(entry)
                 except (ValueError, IndexError):
                     continue
 
+        # Tworzenie datasetu
         dataset = EmotionDataset(post_processed_data)
-        # Przykład użycia:
-        # dataset = przetworz_dane_do_torch(data, VideoIdToEmotionMap, emotionsEnum)
-        # dataloader = DataLoader(dataset, batch_size=32, shuffle=True)  # Przykładowe dalsze przetwarzanie
         return dataset
-
-

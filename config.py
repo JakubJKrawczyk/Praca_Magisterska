@@ -2,4 +2,4 @@ import torch
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-num_heads = 4
+num_heads = 2

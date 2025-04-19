@@ -1,44 +1,94 @@
-from torch import nn, Tensor
 import torch
+from torch import nn, Tensor
 from Custom.Layers.FeedForwardLayer import FeedForwardNetwork
 from Custom.Layers.Input import InputLayer
-from Custom.Layers.MultiLayerContainer import MultiSequenceContainer
 from Custom.Layers.MultiHeadAttention import MultiHeadAttention
 
+class EncoderLayer(nn.Module):
+    """
+    Pojedyncza warstwa enkodera zawierająca MultiHeadAttention i FeedForwardNetwork.
+    """
+    def __init__(self, d_model, num_heads, dropout=0.1):
+        super(EncoderLayer, self).__init__()
+        self.attention = MultiHeadAttention(num_heads=num_heads, d_model=d_model, dropout=dropout)
+        self.feed_forward = FeedForwardNetwork(d_model=d_model, dropout=dropout)
+
+    def forward(self, x):
+        x = self.attention(x)
+        x = self.feed_forward(x)
+        return x
+
 class EEG_class_model(nn.Module):
-    def __init__(self, d_model, heads, d_dropout, num_classes, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    """
+    Model klasyfikacji emocji na podstawie danych EEG wykorzystujący architekturę transformera.
+    
+    Args:
+        d_model (int): Wymiar modelu
+        num_heads (int): Liczba głowic uwagi
+        num_layers (int): Liczba warstw enkodera
+        dropout (float): Współczynnik dropout
+        num_classes (int): Liczba klas emocji do klasyfikacji
+    """
+    def __init__(self, d_model, num_heads, num_layers=2, dropout=0.3, num_classes=7):
+        super(EEG_class_model, self).__init__()
 
+        # Warstwa wejściowa
+        self.input_layer = InputLayer(expected_vector_size=d_model)
+
+        # Warstwy enkodera
+        self.encoder_layers = nn.ModuleList([
+            EncoderLayer(d_model, num_heads, dropout)
+            for _ in range(num_layers)
+        ])
+
+        # Normalizacja końcowa
+        self.layer_norm = nn.LayerNorm(d_model)
+
+        # Współczynnik skalowania
         self.scaling_factor = nn.Parameter(torch.ones(1))
-        self.class_weights = nn.Parameter(torch.randn(d_model, num_classes))
-        self.bias = nn.Parameter(torch.zeros(num_classes))
 
-        self.d_model = d_model
-        self.input = InputLayer(expected_vector_size=self.d_model)
-        self.MultiLayerContainer = MultiSequenceContainer(layers=[
-            MultiHeadAttention(num_heads=heads, d_model=self.d_model, dropout=d_dropout),
-            FeedForwardNetwork(d_model=self.d_model, dropout=d_dropout),
-        ])
-        self.MultiLayerContainer2 = MultiSequenceContainer(layers=[
-            MultiHeadAttention(num_heads=heads, d_model=self.d_model, dropout=d_dropout),
-            FeedForwardNetwork(d_model=self.d_model, dropout=d_dropout),
-        ])
-        self.softmax = nn.Softmax(dim=-1)
+        # Improve classifier with more regularization
+        self.classifier = nn.Sequential(
+            nn.Linear(d_model, d_model*2),
+            nn.LayerNorm(d_model*2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model*2, d_model),
+            nn.LayerNorm(d_model),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model, num_classes)
+        )
 
-    def forward(self, x: Tensor):
-        x = self.input(x)
-        x = self.MultiLayerContainer.forward(x)
-        x = self.MultiLayerContainer2.forward(x)
+    def forward(self, x):
+        """
+        Przetwarza dane EEG i klasyfikuje emocje.
+        
+        Args:
+            x (Tensor): Tensor o kształcie (batch_size, 32) zawierający odczyty z elektrod EEG
+            
+        Returns:
+            Tensor: Tensor prawdopodobieństw klas o kształcie (batch_size, num_classes)
+        """
+        # Warstwa wejściowa - przekształca dane na (batch_size, 32, d_model)
+        x = self.input_layer(x)
 
-        # Użycie zdefiniowanych parametrów
+        # Przetwarzanie przez warstwy enkodera
+        for encoder_layer in self.encoder_layers:
+            x = encoder_layer(x)
+
+        # Normalizacja końcowa
+        x = self.layer_norm(x)
+
+        # Opcjonalne skalowanie
         x = x * self.scaling_factor
 
-        # Przykład użycia parametrów do klasyfikacji
-        # Zakładając, że x ma wymiar [batch_size, d_model]
-        # możemy użyć parametrów do klasyfikacji
-        logits = torch.matmul(x, self.class_weights) + self.bias
+        # Uśrednianie po elektrodach - Global Average Pooling
+        # Teraz x ma kształt (batch_size, d_model)
+        x = x.mean(dim=1)
 
-        logits = logits.mean(dim=0, keepdim=True)
+        # Klasyfikacja
+        logits = self.classifier(x)
 
-        x = self.softmax(logits)
-        return x
+        # Zwracamy logity - nie stosujemy softmax, ponieważ funkcja straty CrossEntropyLoss już go zawiera
+        return logits
