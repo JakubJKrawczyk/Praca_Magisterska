@@ -215,19 +215,20 @@ class DataHelper:
         print(f"\nPrzykładowa zawartość klucza {list(mat_data.keys())[0]}:")
 
     @staticmethod
-    def prepare_data(data) -> EmotionDataset:
+    def adapt_fft_to_original_format(data) -> EmotionDataset:
         """
-        Przetwarza dane z pliku .mat do formatu wymaganego przez model.
-
-        Dane o początkowym kształcie (x, 5, 62) są filtrowane do 32 elektrod
-        i przekształcane do formatu (n_samples, 32), gdzie n_samples = x * 5.
+        Wykonuje transformatę Fouriera a następnie dostosowuje wymiary,
+        aby zachować format (x, 32) kompatybilny z resztą kodu.
 
         Args:
             data (dict): Słownik z danymi z pliku .mat
 
         Returns:
-            EmotionDataset: Dataset zawierający przetworzone dane
+            EmotionDataset: Dataset z danymi FFT w formacie (x, 32)
         """
+        import numpy as np
+        from scipy.fftpack import fft
+
         # Indeksy elektrod do zachowania (32 z 62)
         indices = [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32,
                    34, 36, 38, 40, 42, 44, 46, 48, 50, 53, 54, 55, 59]
@@ -235,12 +236,12 @@ class DataHelper:
         # Filtrujemy dane do wybranych elektrod
         processed_data = {}
         for key, array in data.items():
-            # Wybieramy tylko 32 elektrody z 62
             processed_data[key] = array[:, :, indices]
             print(f"Klucz: {key}, Oryginalny kształt: {array.shape}, Nowy kształt: {processed_data[key].shape}")
 
         # Przygotowanie danych w formie listy słowników
         post_processed_data = []
+
         for key, array in processed_data.items():
             if contains(key, "LDS"):
                 try:
@@ -252,12 +253,97 @@ class DataHelper:
                         # Dla każdego pomiaru w wymiarach (x, 5)
                         for i in range(array.shape[0]):
                             for j in range(array.shape[1]):
-                                # Tworzymy wpis dla każdej kombinacji
-                                entry = {"emotion_id": emotion, "value": array[i][j]}
+                                # Zastosuj transformatę Fouriera do danych z 32 elektrod
+                                signal = array[i][j]
+
+                                # Sprawdź, czy sygnał nie jest stały
+                                if np.std(signal) < 1e-10:
+                                    signal = signal + np.random.normal(0, 1e-5, size=signal.shape)
+
+                                # Oblicz FFT i weź tylko część rzeczywistą (amplitudę)
+                                # W przypadku sygnału rzeczywistego, druga połowa FFT jest lustrzanym odbiciem
+                                fft_result = np.abs(fft(signal))[:len(signal)//2]
+
+                                # Zachowaj te same wymiary - użyj pierwszych 32 komponentów FFT
+                                if len(fft_result) >= 32:
+                                    fft_features = fft_result[:32]
+                                else:
+                                    # Jeśli mamy mniej niż 32 komponenty, dopełnij zerami
+                                    fft_features = np.zeros(32)
+                                    fft_features[:len(fft_result)] = fft_result
+
+                                # Dodaj wpis z cechami częstotliwościowymi
+                                entry = {"emotion_id": emotion, "value": fft_features}
                                 post_processed_data.append(entry)
-                except (ValueError, IndexError):
+                except (ValueError, IndexError) as e:
+                    print(f"Błąd podczas przetwarzania {key}: {e}")
                     continue
 
         # Tworzenie datasetu
         dataset = EmotionDataset(post_processed_data)
+        print(f"\nUtworzono dataset z {len(dataset.emotions)} próbkami.")
+        print(f"Każda próbka zawiera {len(dataset.values[0])} cech częstotliwościowych.")
+
+        # Dodajemy wizualizację korelacji między cechami częstotliwościowymi
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        import pandas as pd
+
+        # Konwertujemy dane do tablicy numpy
+        values_array = np.array(dataset.values)
+
+        # Sprawdź i usuń cechy ze stałymi wartościami (std=0)
+        std_values = np.std(values_array, axis=0)
+        valid_features = std_values > 1e-10
+
+        if not np.all(valid_features):
+            print(f"Znaleziono {np.sum(~valid_features)} cech ze stałą wartością (std=0).")
+            print("Te cechy zostaną usunięte przed obliczeniem korelacji.")
+            values_array_corr = values_array[:, valid_features]
+        else:
+            values_array_corr = values_array
+
+        # Bezpieczne obliczanie macierzy korelacji
+        try:
+            values_df = pd.DataFrame(values_array_corr)
+            corr_df = values_df.corr(method='pearson')
+            corr_matrix = corr_df.fillna(0).values
+
+            # Ustawienia wizualizacji
+            plt.figure(figsize=(16, 14))
+
+            # Tworzenie mapy ciepła
+            mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
+            cmap = sns.diverging_palette(230, 20, as_cmap=True)
+
+            sns.heatmap(corr_df, mask=mask, cmap=cmap, vmax=1, vmin=-1, center=0,
+                        square=True, linewidths=.5, annot=False, fmt=".2f",
+                        cbar_kws={"shrink": .7})
+
+            plt.title('Mapa korelacji między cechami FFT (format 32)', fontsize=16)
+            plt.tight_layout()
+            plt.savefig('korelacja_fft_format32.png', dpi=300, bbox_inches='tight')
+
+            # Statystyka korelacji
+            triu_indices = np.triu_indices(corr_matrix.shape[0], k=1)
+            correlation_values = corr_matrix[triu_indices]
+            correlation_values = correlation_values[~np.isnan(correlation_values)]
+
+            # Oblicz statystyki
+            avg_corr = np.nanmean(correlation_values)
+            max_corr = np.nanmax(correlation_values)
+            min_corr = np.nanmin(correlation_values)
+
+            print(f"\nAnaliza korelacji między cechami FFT (format 32):")
+            print(f"Średnia korelacja: {avg_corr:.3f}")
+            print(f"Minimalna korelacja: {min_corr:.3f}")
+            print(f"Maksymalna korelacja: {max_corr:.3f}")
+        except Exception as e:
+            print(f"Błąd podczas wizualizacji korelacji: {e}")
+
         return dataset
+
+    # Przykład użycia:
+    # data = DataHelper.load_mat_file('sciezka_do_pliku.mat', lds=True)
+    # dataset = DataHelper.adapt_fft_to_original_format(data)
+    # tensor_dataset = dataset.tensorize()

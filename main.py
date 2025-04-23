@@ -47,10 +47,11 @@ data_per_user = EmotionDataset([])
 for file in data_files:
     path = join(data_path, file)
     data = DataHelper.load_mat_file(path, True)
-    processed_data = DataHelper.prepare_data(data)
+    processed_data = DataHelper.adapt_fft_to_original_format(data)
     data_per_user.extend(processed_data)
     logger.display_progress(data_files.index(file), len(data_files), "Processing data", f"Processed {file}")
 
+# exit(0)
 # Konwersja do tensor dataset
 logger.display_progress(1, prepare_process_steps, "Preparing for training", f"Creating tensor dataset...")
 tensor_dataset = data_per_user.tensorize()  # Zwraca TensorDataset
