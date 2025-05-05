@@ -1,17 +1,21 @@
+# Ulepszona warstwa FeedForwardNetwork
+
 import torch.nn as nn
+
 
 class FeedForwardNetwork(nn.Module):
     """
     Implementacja sieci Feed Forward Network (FFN) używanej w transformerach.
 
-    Standardowa struktura: Linear → ReLU → Dropout → Linear → Dropout → Residual → LayerNorm
+    Standardowa struktura: Linear → GELU → Dropout → Linear → Dropout → Residual → LayerNorm
 
     Args:
         d_model (int): Wymiar modelu
         d_ff (int, optional): Wymiar wewnętrzny sieci (zazwyczaj 4*d_model)
         dropout (float, optional): Współczynnik dropout (domyślnie 0.1)
     """
-    def __init__(self, d_model, d_ff=None, dropout=0.1):
+
+    def __init__(self, d_model, d_ff=None, dropout=0.3):
         super(FeedForwardNetwork, self).__init__()
 
         # Jeśli d_ff nie jest określone, używamy konwencji 4*d_model
@@ -21,8 +25,8 @@ class FeedForwardNetwork(nn.Module):
         # Pierwsza warstwa liniowa rozszerza wymiar
         self.linear1 = nn.Linear(d_model, d_ff)
 
-        # Aktywacja
-        self.relu = nn.ReLU()
+        # Aktywacja GELU (często lepsza niż ReLU dla transformerów)
+        self.activation = nn.GELU()
 
         # Dropout po pierwszej warstwie
         self.dropout1 = nn.Dropout(dropout)
@@ -53,7 +57,7 @@ class FeedForwardNetwork(nn.Module):
         x = self.linear1(x)
 
         # Aktywacja i dropout
-        x = self.relu(x)
+        x = self.activation(x)
         x = self.dropout1(x)
 
         # Druga projekcja liniowa

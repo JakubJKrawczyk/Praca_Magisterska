@@ -1,14 +1,18 @@
-import torch
+# Ulepszony model EEG_class_model
+
 from torch import nn, Tensor
+import torch
 from Custom.Layers.FeedForwardLayer import FeedForwardNetwork
 from Custom.Layers.Input import InputLayer
 from Custom.Layers.MultiHeadAttention import MultiHeadAttention
+
 
 class EncoderLayer(nn.Module):
     """
     Pojedyncza warstwa enkodera zawierająca MultiHeadAttention i FeedForwardNetwork.
     """
-    def __init__(self, d_model, num_heads, dropout=0.1):
+
+    def __init__(self, d_model, num_heads, dropout=0.3):
         super(EncoderLayer, self).__init__()
         self.attention = MultiHeadAttention(num_heads=num_heads, d_model=d_model, dropout=dropout)
         self.feed_forward = FeedForwardNetwork(d_model=d_model, dropout=dropout)
@@ -18,10 +22,11 @@ class EncoderLayer(nn.Module):
         x = self.feed_forward(x)
         return x
 
+
 class EEG_class_model(nn.Module):
     """
     Model klasyfikacji emocji na podstawie danych EEG wykorzystujący architekturę transformera.
-    
+
     Args:
         d_model (int): Wymiar modelu
         num_heads (int): Liczba głowic uwagi
@@ -29,6 +34,7 @@ class EEG_class_model(nn.Module):
         dropout (float): Współczynnik dropout
         num_classes (int): Liczba klas emocji do klasyfikacji
     """
+
     def __init__(self, d_model, num_heads, num_layers=2, dropout=0.3, num_classes=7):
         super(EEG_class_model, self).__init__()
 
@@ -44,18 +50,19 @@ class EEG_class_model(nn.Module):
         # Normalizacja końcowa
         self.layer_norm = nn.LayerNorm(d_model)
 
-        # Współczynnik skalowania
+        # Współczynnik skalowania (opcjonalny)
         self.scaling_factor = nn.Parameter(torch.ones(1))
 
-        # Improve classifier with more regularization
+        # Klasyfikator
         self.classifier = nn.Sequential(
-            nn.Linear(d_model, d_model*2),
-            nn.LayerNorm(d_model*2),
-            nn.ReLU(),
+            # Uwaga: Potrzebujemy spłaszczyć dane z elektrod
+            nn.Linear(d_model, d_model * 2),
+            nn.LayerNorm(d_model * 2),
+            nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model*2, d_model),
+            nn.Linear(d_model * 2, d_model),
             nn.LayerNorm(d_model),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(d_model, num_classes)
         )
@@ -63,13 +70,18 @@ class EEG_class_model(nn.Module):
     def forward(self, x):
         """
         Przetwarza dane EEG i klasyfikuje emocje.
-        
+
         Args:
             x (Tensor): Tensor o kształcie (batch_size, 32) zawierający odczyty z elektrod EEG
-            
+
         Returns:
             Tensor: Tensor prawdopodobieństw klas o kształcie (batch_size, num_classes)
         """
+        # Normalizacja danych wejściowych
+        mean = x.mean(dim=1, keepdim=True)
+        std = x.std(dim=1, keepdim=True) + 1e-8
+        x = (x - mean) / std
+
         # Warstwa wejściowa - przekształca dane na (batch_size, 32, d_model)
         x = self.input_layer(x)
 

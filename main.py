@@ -24,21 +24,22 @@ logger = Logger()
 
 prepare_process_steps = 9
 
-# Adjust these parameters
+# Parametry modelu
 d_model = 128        # Wymiar modelu
-num_heads = 4        # Liczba głowic uwagi
-num_layers = 2       # Liczba warstw enkodera
-dropout = 0.3        # Współczynnik dropout (increased for better regularization)
+num_heads = 8        # Liczba głowic uwagi (zwiększona)
+num_layers = 3       # Liczba warstw enkodera (zwiększona)
+dropout = 0.3        # Współczynnik dropout (zwiększony)
 num_classes = 7      # Liczba klas emocji
 
 # Parametry treningu
-batch_size = 64      # Rozmiar partii danych (increased for better stability)
-num_epochs = 50      # Liczba epok treningu
-learning_rate = 0.0005  # Szybkość uczenia (reduced for better convergence)
+batch_size = 32      # Rozmiar partii danych
+num_epochs = 100     # Liczba epok treningu (zwiększona)
+learning_rate = 0.001  # Szybkość uczenia
 beta1 = 0.9          # Współczynnik beta1 dla średnich pierwszego rzędu
 beta2 = 0.999        # Współczynnik beta2 dla średnich drugiego rzędu
 epsilon = 1e-08      # Wartość epsilon dla stabilności numerycznej
-weight_decay = 0.001  # Regularyzacja L2 (increased for better generalization)
+weight_decay = 0.001  # Regularyzacja L2 (zwiększona)
+
 # 1. Ładowanie i przetwarzanie danych
 logger.display_progress(0, prepare_process_steps, "Starting data processing", "Initializing...")
 

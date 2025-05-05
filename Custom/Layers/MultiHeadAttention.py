@@ -1,17 +1,20 @@
+# Zmodyfikowana klasa MultiHeadAttention
+
 import torch
 from torch import nn, Tensor
 from Custom.Layers.ScaledDotProductAttention import ScaledDotProductAttention
-from config import device
+
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, num_heads, d_model, dropout=0.1):
+    def __init__(self, num_heads, d_model, dropout=0.3):
         super(MultiHeadAttention, self).__init__()
-
-        # Sprawdzenie, czy d_model jest podzielne przez num_heads
-        assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
-
         self.num_heads = num_heads
         self.d_model = d_model
+        self.dropout = dropout
+
+        # Sprawdzenie, czy d_model jest podzielne przez num_heads
+        assert d_model % num_heads == 0, "d_model musi być podzielne przez num_heads"
+
         self.d_k = d_model // num_heads  # wymiar dla każdej głowicy
 
         # Warstwy projekcji dla Q, K, V (tworzone RAZ w __init__, nie w forward)
@@ -25,7 +28,7 @@ class MultiHeadAttention(nn.Module):
         # Uwaga i normalizacja
         self.attention = ScaledDotProductAttention(d_model=self.d_k, dropout=dropout)
         self.layer_norm = nn.LayerNorm(d_model)
-        self.dropout = nn.Dropout(dropout)
+        self.dropout_layer = nn.Dropout(dropout)
 
     def forward(self, x):
         # x ma wymiary [batch_size, num_nodes, d_model]
@@ -33,7 +36,7 @@ class MultiHeadAttention(nn.Module):
 
         # Projekcje Q, K, V
         Q = self.query_projection(x)  # [batch_size, num_nodes, d_model]
-        K = self.key_projection(x)    # [batch_size, num_nodes, d_model]
+        K = self.key_projection(x)  # [batch_size, num_nodes, d_model]
         V = self.value_projection(x)  # [batch_size, num_nodes, d_model]
 
         # Zmiana kształtu dla multi-head attention
@@ -62,6 +65,6 @@ class MultiHeadAttention(nn.Module):
 
         # Residual connection i normalizacja
         output = self.layer_norm(output + x)
-        output = self.dropout(output)
+        output = self.dropout_layer(output)
 
         return output

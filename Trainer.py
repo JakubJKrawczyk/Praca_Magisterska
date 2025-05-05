@@ -20,7 +20,7 @@ class Trainer:
         self.log_interval = log_interval
         self.clip_grad = clip_grad
 
-    def train_model(self, model, train_loader, criterion, optimizer, num_epochs=10, visualize=True):
+    def train_model(self, model, train_loader, criterion, optimizer, num_epochs=50, visualize=True):
         """
         Trenuje model na danych treningowych z opcjonalną wizualizacją.
         """
@@ -31,25 +31,35 @@ class Trainer:
         train_losses = []
         train_accuracies = []
 
-        # Initialize visualizer if requested
+        # Inicjalizacja wizualizatora
         visualizer = None
         if visualize:
             try:
                 from Custom.Visualizer import SimpleEEGVisualizer
                 visualizer = SimpleEEGVisualizer(model)
-                print("Simple EEG visualization initialized successfully!")
+                print("Wizualizacja zainicjalizowana!")
             except Exception as e:
-                print(f"Error initializing visualization: {e}")
-                print("Training without visualization.")
+                print(f"Błąd inicjalizacji wizualizacji: {e}")
                 visualize = False
 
-        # Learning rate scheduler
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, 'min', patience=3, factor=0.5, verbose=True
+        # Learning rate scheduler dla lepszej zbieżności
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=0.01,
+            epochs=num_epochs,
+            steps_per_epoch=len(train_loader),
+            pct_start=0.1,
+            div_factor=25.0,
+            final_div_factor=10000.0
         )
 
+        # Early stopping
+        best_loss = float('inf')
+        patience = 10
+        patience_counter = 0
+
         for epoch in range(num_epochs):
-            self.logger.display_progress(epoch, num_epochs, "Training...", f"Epoch {epoch+1}/{num_epochs}")
+            self.logger.display_progress(epoch, num_epochs, "Training...", f"Epoch {epoch + 1}/{num_epochs}")
 
             running_loss = 0.0
             correct = 0
@@ -66,6 +76,10 @@ class Trainer:
                 # Przeniesienie danych na odpowiednie urządzenie
                 inputs, labels = inputs.to(self.device), labels.to(self.device)
 
+                # Augmentacja danych
+                if epoch > 0:  # Zaczynamy augmentację od drugiej epoki
+                    inputs = self.augment_data(inputs)
+
                 # Zerowanie gradientów
                 optimizer.zero_grad()
 
@@ -74,10 +88,8 @@ class Trainer:
 
                 # Sprawdzenie wymiarów wyjściowych
                 if outputs.dim() == 2 and labels.dim() == 1:
-                    # Standardowy przypadek: outputs [batch_size, num_classes], labels [batch_size]
                     loss = criterion(outputs, labels)
                 else:
-                    # Obsługa innych przypadków
                     self.logger.display_progress(batch_idx, len(train_loader), "Error",
                                                  f"Incompatible dimensions: outputs {outputs.shape}, labels {labels.shape}")
                     raise ValueError(f"Incompatible dimensions: outputs {outputs.shape}, labels {labels.shape}")
@@ -85,30 +97,33 @@ class Trainer:
                 # Backward pass
                 loss.backward()
 
-                # Gradient clipping to prevent explosion
+                # Gradient clipping
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
-                # Update visualization before optimizer step
-                if visualize and visualizer and batch_idx % 5 == 0:  # Update every 5 batches for performance
+                # Aktualizacja wizualizacji przed krokiem optymalizacji
+                if visualize and visualizer and batch_idx % 5 == 0:  # Aktualizuj co 5 batchy dla wydajności
                     try:
-                        # Calculate batch accuracy for visualization
+                        # Oblicz dokładność dla bieżącego batcha
                         _, predicted = torch.max(outputs.data, 1)
                         batch_accuracy = 100 * (predicted == labels).sum().item() / labels.size(0)
 
-                        # Update and render the visualization
+                        # Aktualizuj i renderuj wizualizację
                         visualizer.update(loss.item(), batch_accuracy, model)
                         visualizer.render()
 
-                        # Check if user wants to quit
+                        # Sprawdź, czy użytkownik chce zamknąć wizualizację
                         if not visualizer.check_events():
-                            print("Visualization closed. Continuing training without visualization.")
+                            print("Wizualizacja zamknięta. Kontynuacja treningu bez wizualizacji.")
                             visualize = False
                     except Exception as e:
-                        print(f"Visualization error: {e}")
+                        print(f"Błąd wizualizacji: {e}")
                         visualize = False
 
                 # Optymalizacja
                 optimizer.step()
+
+                # Aktualizacja learning rate
+                scheduler.step()
 
                 # Aktualizacja statystyk
                 running_loss += loss.item() * inputs.size(0)
@@ -119,12 +134,20 @@ class Trainer:
                 # Wyświetlanie postępu
                 if batch_idx % self.log_interval == 0:
                     batch_accuracy = 100 * (predicted == labels).sum().item() / labels.size(0)
+                    current_lr = scheduler.get_last_lr()[0]
                     self.logger.display_progress(
                         batch_idx, len(train_loader),
                         "Training batch...",
-                        f"Epoch {epoch+1}/{num_epochs} Batch {batch_idx+1}/{len(train_loader)} "
-                        f"Loss: {loss.item():.4f} Batch Accuracy: {batch_accuracy:.2f}%"
+                        f"Epoch {epoch + 1}/{num_epochs} Batch {batch_idx + 1}/{len(train_loader)} "
+                        f"Loss: {loss.item():.4f} Acc: {batch_accuracy:.2f}% LR: {current_lr:.6f}"
                     )
+
+                    # Wyświetl dystrybucję etykiet i przewidywań
+                    if batch_idx == 0:
+                        label_counts = torch.bincount(labels, minlength=7)
+                        pred_counts = torch.bincount(predicted, minlength=7)
+                        print(f"Label distribution: {label_counts}")
+                        print(f"Prediction distribution: {pred_counts}")
 
             # Statystyki dla epoki
             epoch_loss = running_loss / total
@@ -132,20 +155,66 @@ class Trainer:
             train_losses.append(epoch_loss)
             train_accuracies.append(epoch_accuracy)
 
-            # Update learning rate based on loss
-            scheduler.step(epoch_loss)
-
-            print(f'Epoka [{epoch+1}/{num_epochs}], Średnia strata: {epoch_loss:.4f}, '
+            print(f'Epoka [{epoch + 1}/{num_epochs}], Strata: {epoch_loss:.4f}, '
                   f'Dokładność: {epoch_accuracy:.2f}%')
 
-        # Clean up
+            # Early stopping
+            if epoch_loss < best_loss:
+                best_loss = epoch_loss
+                patience_counter = 0
+                # Zapisz najlepszy model
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'loss': epoch_loss,
+                    'accuracy': epoch_accuracy,
+                }, 'best_model.pth')
+                print(f"Zapisano najlepszy model z loss: {epoch_loss:.4f}")
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    print(f"Early stopping po {epoch + 1} epokach!")
+                    break
+
+        # Zamknij wizualizację po zakończeniu
         if visualize and visualizer:
             visualizer.close()
 
         self.logger.display_progress(num_epochs, num_epochs, "Finishing training...")
         time.sleep(1)
 
+        # Załaduj najlepszy model
+        checkpoint = torch.load('best_model.pth')
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"Załadowano najlepszy model z epoki {checkpoint['epoch'] + 1} z loss: {checkpoint['loss']:.4f}")
+
         return train_losses, train_accuracies
+
+    def augment_data(self, inputs, p=0.5):
+        """
+        Funkcja augmentacji danych EEG.
+        """
+        # Kopiujemy wejście, aby nie modyfikować oryginału
+        augmented = inputs.clone()
+
+        # Dodanie szumu gaussowskiego
+        if torch.rand(1).item() < p:
+            noise = torch.randn_like(augmented) * 0.05
+            augmented = augmented + noise
+
+        # Maskowanie losowych elektrod
+        if torch.rand(1).item() < p:
+            mask = torch.rand(augmented.shape[1]) > 0.1  # Porzuć ~10% elektrod
+            mask = mask.to(augmented.device)
+            augmented = augmented * mask.float()
+
+        # Skalowanie
+        if torch.rand(1).item() < p:
+            scale = 1.0 + (torch.rand(1).item() - 0.5) * 0.2  # ±10% skalowanie
+            augmented = augmented * scale
+
+        return augmented
 
     def evaluate_model(self, model, test_loader, criterion):
         """

@@ -21,11 +21,11 @@ class EmotionDataset(Dataset):
 
         # Przypisujemy indeksy do emocji
         for idx, emotion_array in enumerate(emotion_data):
-            self.idx_to_emotion[idx] = emotionsEnum[emotion_array["emotion_id"]]
+            self.idx_to_emotion[idx] = mapuj_emocje(emotion_array["emotion_id"], False)
 
         # Wypełniamy listy danych
         for emotion_array in emotion_data:
-            self.emotions.append(emotion_array["emotion_id"])
+            self.emotions.append(mapuj_emocje(emotion_array["emotion_id"], True))
             self.values.append(emotion_array["value"])
 
         # Wyświetlenie informacji o danych
@@ -44,7 +44,7 @@ class EmotionDataset(Dataset):
         """
         # Konwertujemy na tensory
         emotions_tensor = torch.tensor(self.emotions, dtype=torch.long)
-        values_tensor = torch.tensor(self.values, dtype=torch.float)
+        values_tensor = DataHelper.normalize_de_features(torch.tensor(self.values, dtype=torch.float))
 
 
 # Sprawdzenie wymiarów
@@ -87,6 +87,23 @@ emotionsEnum = {
     5: "Surprise",
     6: "Disgust"
 }
+
+positiveNegative_enum = {
+    0: "Negative",
+    1: "Positive"
+}
+
+def mapuj_emocje(liczba : int, return_id : bool):
+    if liczba in [1, 5, 0]:
+        if return_id:
+            return 1
+        else:
+            return positiveNegative_enum[1]
+    elif liczba in [2, 3, 4, 6]:
+        if return_id:
+            return 0
+        else:
+            return positiveNegative_enum[0]
 
 # Mapowanie ID wideo na emocje
 VideoIdToEmotionMap = {
@@ -177,6 +194,22 @@ VideoIdToEmotionMap = {
 }
 
 class DataHelper:
+    @staticmethod
+    def normalize_de_features(features):
+        """
+        Normalizuje cechy DE dla lepszego uczenia.
+
+        Args:
+            features: Tensor cech DE
+
+        Returns:
+            Tensor znormalizowanych cech
+        """
+        mean = features.mean(dim=1, keepdim=True)
+        std = features.std(dim=1, keepdim=True) + 1e-8
+        normalized = (features - mean) / std
+        return normalized
+
     @staticmethod
     def load_mat_file(file_path, lds=False):
         """
