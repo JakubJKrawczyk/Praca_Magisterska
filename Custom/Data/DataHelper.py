@@ -1,10 +1,8 @@
-from operator import contains, indexOf
+from operator import contains
 import scipy.io as sio
 import torch
-from pandas.core.interchange.utils import dtype_to_arrow_c_fmt
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, TensorDataset, DataLoader
 import numpy as np
-from torch.utils.data import TensorDataset, DataLoader
 
 class EmotionDataset(Dataset):
     """
@@ -12,42 +10,54 @@ class EmotionDataset(Dataset):
 
     Każdy element datasetu to para (emotion_id, electrode_values), gdzie:
     - emotion_id: identyfikator emocji (0-6)
-    - electrode_values: tensor o wymiarze (32,) zawierający wartości z 32 elektrod
+    - electrode_values: słownik zawierający wartości 5 pasm (delta, theta, alpha, beta, gamma)
+                         dla 32 elektrod
     """
-    def __init__(self, emotion_data:[{int, np.ndarray}]):
+    def __init__(self, emotion_data):
         self.emotions = []
         self.values = []
         self.idx_to_emotion = {}
 
         # Przypisujemy indeksy do emocji
-        for idx, emotion_array in enumerate(emotion_data):
-            self.idx_to_emotion[idx] = mapuj_emocje(emotion_array["emotion_id"], False)
+        for idx, emotion in enumerate(emotionsEnum.values()):
+            self.idx_to_emotion[idx] = emotion
 
         # Wypełniamy listy danych
         for emotion_array in emotion_data:
-            self.emotions.append(mapuj_emocje(emotion_array["emotion_id"], True))
+            self.emotions.append(emotion_array["emotion_id"])
             self.values.append(emotion_array["value"])
 
         # Wyświetlenie informacji o danych
         if len(self.values) > 0:
             print(f"EmotionDataset created with {len(self.emotions)} samples")
-            print(f"Each sample contains values from 32 electrodes: {len(self.values[0])}")
+            print(f"Each sample contains values for 5 bands and 32 electrodes")
 
     def tensorize(self):
         """
         Konwertuje dane na tensory PyTorch i zwraca TensorDataset.
 
         Returns:
-            TensorDataset: Dataset zawierający parę tensorów (emotions, values)
+            TensorDataset: Dataset zawierający parę tensorów (values, emotions)
                 emotions: tensor o wymiarze (n_samples,) - identyfikatory emocji
-                values: tensor o wymiarze (n_samples, 32) - wartości z elektrod
+                values: tensor o wymiarze (n_samples, 5, 32) - wartości z 5 pasm dla 32 elektrod
         """
-        # Konwertujemy na tensory
+        # Konwertujemy emocje na tensor
         emotions_tensor = torch.tensor(self.emotions, dtype=torch.long)
-        values_tensor = DataHelper.normalize_de_features(torch.tensor(self.values, dtype=torch.float))
 
+        # Konwertujemy słowniki pasm na tensor 3D [n_samples, 5, 32]
+        bands = ["delta", "theta", "alpha", "beta", "gamma"]
+        values_np = np.zeros((len(self.values), len(bands), 32), dtype=np.float32)
 
-# Sprawdzenie wymiarów
+        for i, sample in enumerate(self.values):
+            for j, band in enumerate(bands):
+                values_np[i, j] = np.array(sample[band], dtype=np.float32)
+
+        values_tensor = torch.tensor(values_np, dtype=torch.float)
+
+        # Normalizacja
+        values_tensor = DataHelper.normalize_de_features(values_tensor)
+
+        # Sprawdzenie wymiarów
         print(f"Tensors created: emotions {emotions_tensor.shape}, values {values_tensor.shape}")
 
         # Tworzenie TensorDataset
@@ -57,7 +67,7 @@ class EmotionDataset(Dataset):
         return len(self.emotions)
 
     def get_emotion(self, idx):
-        return self.idx_to_emotion[idx]
+        return self.idx_to_emotion[self.emotions[idx]]
 
     def extend(self, other):
         """
@@ -69,10 +79,6 @@ class EmotionDataset(Dataset):
         if isinstance(other, EmotionDataset):
             self.emotions.extend(other.emotions)
             self.values.extend(other.values)
-            incrementer = len(self.idx_to_emotion)
-            for emotion in other.idx_to_emotion.values():
-                self.idx_to_emotion[incrementer] = emotion
-                incrementer += 1
         else:
             raise TypeError("Can only add another EmotionDataset instance.")
 
@@ -88,22 +94,22 @@ emotionsEnum = {
     6: "Disgust"
 }
 
-positiveNegative_enum = {
-    0: "Negative",
-    1: "Positive"
-}
+# positiveNegative_enum = {
+#     0: "Negative",
+#     1: "Positive"
+# }
 
-def mapuj_emocje(liczba : int, return_id : bool):
-    if liczba in [1, 5, 0]:
-        if return_id:
-            return 1
-        else:
-            return positiveNegative_enum[1]
-    elif liczba in [2, 3, 4, 6]:
-        if return_id:
-            return 0
-        else:
-            return positiveNegative_enum[0]
+# def mapuj_emocje(liczba : int, return_id : bool):
+#     if liczba in [1, 5, 0]:
+#         if return_id:
+#             return 1
+#         else:
+#             return positiveNegative_enum[1]
+#     elif liczba in [2, 3, 4, 6]:
+#         if return_id:
+#             return 0
+#         else:
+#             return positiveNegative_enum[0]
 
 # Mapowanie ID wideo na emocje
 VideoIdToEmotionMap = {
@@ -197,18 +203,26 @@ class DataHelper:
     @staticmethod
     def normalize_de_features(features):
         """
-        Normalizuje cechy DE dla lepszego uczenia.
+        Normalizuje cechy dla lepszego uczenia.
 
         Args:
-            features: Tensor cech DE
+            features: Tensor cech w formacie [samples, bands, electrodes]
 
         Returns:
             Tensor znormalizowanych cech
         """
-        mean = features.mean(dim=1, keepdim=True)
-        std = features.std(dim=1, keepdim=True) + 1e-8
-        normalized = (features - mean) / std
-        return normalized
+        # Normalizacja dla każdej próbki oddzielnie
+        # Reshape do [samples, bands*electrodes]
+        batch_size = features.shape[0]
+        flat_features = features.reshape(batch_size, -1)
+
+        # Normalizacja
+        mean = flat_features.mean(dim=1, keepdim=True)
+        std = flat_features.std(dim=1, keepdim=True) + 1e-8
+        normalized = (flat_features - mean) / std
+
+        # Reshape z powrotem do [samples, bands, electrodes]
+        return normalized.reshape(features.shape)
 
     @staticmethod
     def load_mat_file(file_path, lds=False):
@@ -230,7 +244,12 @@ class DataHelper:
                 if contains(key, "LDS"):
                     processed[key] = mat_data[key]
             return processed
-        return mat_data
+        else:
+            processed = {}
+            for key in mat_data.keys():
+                if contains(key, "de") and not contains(key, "LDS") and not contains(key, "__header__"):
+                    processed[key] = mat_data[key]
+            return processed
 
     @staticmethod
     def print_mat_content(mat_data):
@@ -248,135 +267,61 @@ class DataHelper:
         print(f"\nPrzykładowa zawartość klucza {list(mat_data.keys())[0]}:")
 
     @staticmethod
-    def adapt_fft_to_original_format(data) -> EmotionDataset:
+    def adapt_to_emotion_format(data) -> list:
         """
-        Wykonuje transformatę Fouriera a następnie dostosowuje wymiary,
-        aby zachować format (x, 32) kompatybilny z resztą kodu.
-
-        Args:
-            data (dict): Słownik z danymi z pliku .mat
-
-        Returns:
-            EmotionDataset: Dataset z danymi FFT w formacie (x, 32)
+        Konwertuje dane w formacie [próbki, pasma, elektrody] na docelową strukturę.
         """
-        import numpy as np
-        from scipy.fftpack import fft
+        # Indeksy 32 elektrod do wyboru (z 62)
+        selected_electrodes = [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24,
+                               26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50,
+                               53, 54, 55, 59]
 
-        # Indeksy elektrod do zachowania (32 z 62)
-        indices = [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32,
-                   34, 36, 38, 40, 42, 44, 46, 48, 50, 53, 54, 55, 59]
+        # Mapowanie pasm na nazwy
+        bands = ["delta", "theta", "alpha", "beta", "gamma"]
 
-        # Filtrujemy dane do wybranych elektrod
-        processed_data = {}
+        processed_data = []
+
         for key, array in data.items():
-            processed_data[key] = array[:, :, indices]
-            print(f"Klucz: {key}, Oryginalny kształt: {array.shape}, Nowy kształt: {processed_data[key].shape}")
+            try:
+                # Ekstrakcja emocji z klucza
+                video_number = int(key.split("_")[2] if "LDS" in key else key.split("_")[1])
+                emotion = VideoIdToEmotionMap[video_number]
 
-        # Przygotowanie danych w formie listy słowników
-        post_processed_data = []
+                # Wybór 32 elektrod z 62
+                array = array[:, :, selected_electrodes]
 
-        for key, array in processed_data.items():
-            if contains(key, "LDS"):
-                try:
-                    # Ekstrakcja numeru wideo z klucza
-                    number = int(key.split("_")[2])
-                    # Mapowanie numeru wideo na emocję
-                    emotion = VideoIdToEmotionMap[number]
-                    if number:
-                        # Dla każdego pomiaru w wymiarach (x, 5)
-                        for i in range(array.shape[0]):
-                            for j in range(array.shape[1]):
-                                # Zastosuj transformatę Fouriera do danych z 32 elektrod
-                                signal = array[i][j]
+                # Dla każdej próbki czasowej
+                for sample_idx in range(array.shape[0]):
+                    band_data = {}
 
-                                # Sprawdź, czy sygnał nie jest stały
-                                if np.std(signal) < 1e-10:
-                                    signal = signal + np.random.normal(0, 1e-5, size=signal.shape)
+                    # Dla każdego pasma
+                    for band_idx, band_name in enumerate(bands):
+                        # Pobierz wartości dla 32 elektrod
+                        electrodes_values = array[sample_idx, band_idx, :].tolist()
+                        band_data[band_name] = electrodes_values
 
-                                # Oblicz FFT i weź tylko część rzeczywistą (amplitudę)
-                                # W przypadku sygnału rzeczywistego, druga połowa FFT jest lustrzanym odbiciem
-                                fft_result = np.abs(fft(signal))[:len(signal)//2]
+                    processed_data.append({
+                        "emotion_id": emotion,
+                        "value": band_data
+                    })
 
-                                # Zachowaj te same wymiary - użyj pierwszych 32 komponentów FFT
-                                if len(fft_result) >= 32:
-                                    fft_features = fft_result[:32]
-                                else:
-                                    # Jeśli mamy mniej niż 32 komponenty, dopełnij zerami
-                                    fft_features = np.zeros(32)
-                                    fft_features[:len(fft_result)] = fft_result
+            except Exception as e:
+                print(f"Błąd przetwarzania {key}: {e}")
 
-                                # Dodaj wpis z cechami częstotliwościowymi
-                                entry = {"emotion_id": emotion, "value": fft_features}
-                                post_processed_data.append(entry)
-                except (ValueError, IndexError) as e:
-                    print(f"Błąd podczas przetwarzania {key}: {e}")
-                    continue
+        return processed_data
 
-        # Tworzenie datasetu
-        dataset = EmotionDataset(post_processed_data)
-        print(f"\nUtworzono dataset z {len(dataset.emotions)} próbkami.")
-        print(f"Każda próbka zawiera {len(dataset.values[0])} cech częstotliwościowych.")
-
-        # Dodajemy wizualizację korelacji między cechami częstotliwościowymi
-        import matplotlib.pyplot as plt
-        import seaborn as sns
-        import pandas as pd
-
-        # Konwertujemy dane do tablicy numpy
-        values_array = np.array(dataset.values)
-
-        # Sprawdź i usuń cechy ze stałymi wartościami (std=0)
-        std_values = np.std(values_array, axis=0)
-        valid_features = std_values > 1e-10
-
-        if not np.all(valid_features):
-            print(f"Znaleziono {np.sum(~valid_features)} cech ze stałą wartością (std=0).")
-            print("Te cechy zostaną usunięte przed obliczeniem korelacji.")
-            values_array_corr = values_array[:, valid_features]
-        else:
-            values_array_corr = values_array
-
-        # Bezpieczne obliczanie macierzy korelacji
-        try:
-            values_df = pd.DataFrame(values_array_corr)
-            corr_df = values_df.corr(method='pearson')
-            corr_matrix = corr_df.fillna(0).values
-
-            # Ustawienia wizualizacji
-            plt.figure(figsize=(16, 14))
-
-            # Tworzenie mapy ciepła
-            mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
-            cmap = sns.diverging_palette(230, 20, as_cmap=True)
-
-            sns.heatmap(corr_df, mask=mask, cmap=cmap, vmax=1, vmin=-1, center=0,
-                        square=True, linewidths=.5, annot=False, fmt=".2f",
-                        cbar_kws={"shrink": .7})
-
-            plt.title('Mapa korelacji między cechami FFT (format 32)', fontsize=16)
-            plt.tight_layout()
-            plt.savefig('korelacja_fft_format32.png', dpi=300, bbox_inches='tight')
-
-            # Statystyka korelacji
-            triu_indices = np.triu_indices(corr_matrix.shape[0], k=1)
-            correlation_values = corr_matrix[triu_indices]
-            correlation_values = correlation_values[~np.isnan(correlation_values)]
-
-            # Oblicz statystyki
-            avg_corr = np.nanmean(correlation_values)
-            max_corr = np.nanmax(correlation_values)
-            min_corr = np.nanmin(correlation_values)
-
-            print(f"\nAnaliza korelacji między cechami FFT (format 32):")
-            print(f"Średnia korelacja: {avg_corr:.3f}")
-            print(f"Minimalna korelacja: {min_corr:.3f}")
-            print(f"Maksymalna korelacja: {max_corr:.3f}")
-        except Exception as e:
-            print(f"Błąd podczas wizualizacji korelacji: {e}")
-
-        return dataset
-
-    # Przykład użycia:
-    # data = DataHelper.load_mat_file('sciezka_do_pliku.mat', lds=True)
-    # dataset = DataHelper.adapt_fft_to_original_format(data)
-    # tensor_dataset = dataset.tensorize()
+# Przykład użycia:
+# 1. Wczytanie danych z pliku .mat
+# mat_data = DataHelper.load_mat_file('sciezka_do_pliku.mat', lds=True)
+#
+# 2. Konwersja danych do odpowiedniego formatu
+# processed_data = DataHelper.adapt_to_emotion_format(mat_data)
+#
+# 3. Tworzenie datasetu
+# dataset = EmotionDataset(processed_data)
+#
+# 4. Konwersja na tensory
+# tensor_dataset = dataset.tensorize()
+#
+# 5. Utworzenie dataloaderaL
+# dataloader = DataLoader(tensor_dataset, batch_size=32, shuffle=True)
