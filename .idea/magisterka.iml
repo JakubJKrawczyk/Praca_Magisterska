@@ -433,7 +433,7 @@
       <excludeFolder url="file://$MODULE_DIR$/.venv/lib/python3.12/site-packages/yarl-1.18.3.dist-info" />
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
     </content>
-    <orderEntry type="jdk" jdkName="Python 3.13 (PracaMagisterska)" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="Python 3.12 virtualenv at ~/magisterka/.venv" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
   <component name="PackageRequirementsSettings">

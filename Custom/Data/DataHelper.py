@@ -71,16 +71,39 @@ class EmotionDataset(Dataset):
 
     def extend(self, other):
         """
-        Rozszerza dataset o dane z innego EmotionDataset.
+        Rozszerza dataset o dane z innego EmotionDataset lub listy słowników.
 
         Args:
-            other (EmotionDataset): Dataset do dodania
+            other: Może być:
+                - EmotionDataset: Inna instancja EmotionDataset
+                - list: Lista słowników w formacie [{emotion_id: id, value: {delta: value, theta: value, ...}}]
         """
         if isinstance(other, EmotionDataset):
             self.emotions.extend(other.emotions)
             self.values.extend(other.values)
+        elif isinstance(other, list):
+            # Sprawdzamy czy lista zawiera słowniki w odpowiednim formacie
+            try:
+                for item in other:
+                    if "emotion_id" in item and "value" in item:
+                        # Weryfikacja kluczy we values
+                        required_bands = ["delta", "theta", "alpha", "beta", "gamma"]
+                        if all(band in item["value"] for band in required_bands):
+                            self.emotions.append(item["emotion_id"])
+                            self.values.append(item["value"])
+                        else:
+                            missing_bands = [band for band in required_bands if band not in item["value"]]
+                            raise ValueError(f"Missing bands in item's value: {missing_bands}")
+                    else:
+                        raise ValueError("Each item must contain 'emotion_id' and 'value' keys")
+
+                # Po przetworzeniu wyświetl informację o liczbie dodanych elementów
+                print(f"Added {len(other)} samples to dataset")
+
+            except (KeyError, ValueError) as e:
+                raise ValueError(f"Invalid format in the list: {str(e)}")
         else:
-            raise TypeError("Can only add another EmotionDataset instance.")
+            raise TypeError("Can only add another EmotionDataset instance or a list of properly formatted dictionaries")
 
 
 # Mapowanie ID emocji na nazwy

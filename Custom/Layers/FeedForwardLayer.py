@@ -1,18 +1,18 @@
-# Ulepszona warstwa FeedForwardNetwork
-
+import torch
 import torch.nn as nn
 
 
 class FeedForwardNetwork(nn.Module):
     """
-    Implementacja sieci Feed Forward Network (FFN) używanej w transformerach.
+    Implementacja sieci Feed Forward Network (FFN) dostosowana do przetwarzania danych EEG.
+    Obsługuje format 4D [Batch, Bands, Nodes, D_model] i przetwarza każde pasmo częstotliwości osobno.
 
-    Standardowa struktura: Linear → GELU → Dropout → Linear → Dropout → Residual → LayerNorm
+    Struktura: Linear → GELU → Dropout → Linear → Dropout → Residual → LayerNorm
 
     Args:
-        d_model (int): Wymiar modelu
+        d_model (int): Wymiar modelu (ostatni wymiar tensora wejściowego)
         d_ff (int, optional): Wymiar wewnętrzny sieci (zazwyczaj 4*d_model)
-        dropout (float, optional): Współczynnik dropout (domyślnie 0.1)
+        dropout (float, optional): Współczynnik dropout (domyślnie 0.3)
     """
 
     def __init__(self, d_model, d_ff=None, dropout=0.3):
@@ -40,21 +40,21 @@ class FeedForwardNetwork(nn.Module):
         # Normalizacja warstwy
         self.layer_norm = nn.LayerNorm(d_model)
 
-    def forward(self, x):
+    def _process_band(self, x_band):
         """
-        Przetwarza tensor wejściowy przez sieć FFN.
+        Przetwarza pojedyncze pasmo częstotliwości.
 
         Args:
-            x (Tensor): Tensor wejściowy o kształcie (..., d_model)
+            x_band (Tensor): Tensor pasma o kształcie [batch_size, num_nodes, d_model]
 
         Returns:
-            Tensor: Tensor wyjściowy o kształcie (..., d_model)
+            Tensor: Przetworzone pasmo o tym samym kształcie
         """
         # Zapisujemy wejście dla połączenia residualnego
-        residual = x
+        residual = x_band
 
         # Pierwsza projekcja liniowa
-        x = self.linear1(x)
+        x = self.linear1(x_band)
 
         # Aktywacja i dropout
         x = self.activation(x)
@@ -71,3 +71,34 @@ class FeedForwardNetwork(nn.Module):
         x = self.layer_norm(x)
 
         return x
+
+    def forward(self, x):
+        """
+        Przetwarza 4D tensor [batch, bands, nodes, d_model] przez sieć FFN,
+        osobno dla każdego pasma częstotliwości.
+
+        Args:
+            x (Tensor): Tensor wejściowy o kształcie [batch_size, num_bands, num_nodes, d_model]
+                reprezentujący cechy elektrod dla różnych pasm częstotliwości
+
+        Returns:
+            Tensor: Tensor wyjściowy o takim samym kształcie
+        """
+        # x ma wymiary [batch_size, num_bands, num_nodes, d_model]
+        batch_size, num_bands, num_nodes, d_model = x.shape
+
+        # Przygotowanie tensora wyjściowego
+        output = torch.zeros_like(x)
+
+        # Przetwarzanie każdego pasma osobno
+        for band_idx in range(num_bands):
+            # Wyodrębnienie danych dla pojedynczego pasma
+            band_data = x[:, band_idx]  # [batch_size, num_nodes, d_model]
+
+            # Przetworzenie pasma
+            processed_band = self._process_band(band_data)
+
+            # Zapisanie wyników
+            output[:, band_idx] = processed_band
+
+        return output

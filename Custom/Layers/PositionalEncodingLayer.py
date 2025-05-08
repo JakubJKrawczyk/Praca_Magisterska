@@ -7,24 +7,61 @@ from Custom.Layers.FeedForwardLayer import FeedForwardNetwork
 from Custom.Layers.Input import InputLayer
 from Custom.Layers.MultiHeadAttention import MultiHeadAttention
 from Custom.Layers.MultiLayerContainer import EncoderLayer
-from Custom.Layers.PositionalEncodingLayer import PositionalEncoding
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=500, dropout=0.1):  # Zwiększ max_len do dużej wartości
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        # Wyświetl informacje debugowania przy inicjalizacji
+        print(f"Initializing PositionalEncoding with max_len={max_len}, d_model={d_model}")
+
+        # Tworzenie stałej tablicy pozycyjnego enkodowania
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)  # [1, max_len, d_model]
+
+        # Rejestracja jako bufor (nie parametr)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        # Wyświetl informacje o rozmiarach podczas przetwarzania
+        print(f"PositionalEncoding forward: x.shape={x.shape}, pe.shape={self.pe.shape}")
+
+        # Sprawdź, czy wymiary są zgodne przed dodaniem
+        if x.size(1) > self.pe.shape[1]:
+            # Dynamicznie rozszerz pe do wymaganego rozmiaru
+            device = x.device
+            required_len = x.size(1)
+            new_pe = torch.zeros(1, required_len, self.pe.shape[2], device=device)
+
+            # Wypełnij nowy tensor używając wartości z istniejącego pe
+            position = torch.arange(0, required_len, dtype=torch.float, device=device).unsqueeze(1)
+            div_term = torch.exp(
+                torch.arange(0, self.pe.shape[2], 2, device=device).float() * (-math.log(10000.0) / self.pe.shape[2]))
+
+            new_pe[0, :, 0::2] = torch.sin(position * div_term)
+            new_pe[0, :, 1::2] = torch.cos(position * div_term)
+
+            # Użyj nowego pe zamiast starego
+            print(f"Dynamically expanded pe to shape {new_pe.shape}")
+            x = x + new_pe[:, :x.size(1), :]
+        else:
+            # Standardowe dodanie
+            x = x + self.pe[:, :x.size(1), :]
+
+        return self.dropout(x)
 
 
 class EEG_class_model(nn.Module):
     """
-    Ulepszony model klasyfikacji emocji na podstawie danych EEG
+    Ulepszony model klasyfikacji emocji na podstawie danych EEG 
     wykorzystujący architekturę hybrydową: CNN + Transformer.
-
-    Args:
-        d_model (int): Wymiar modelu
-        num_heads (int): Liczba głowic uwagi
-        num_layers (int): Liczba warstw enkodera
-        dropout (float): Współczynnik dropout
-        num_classes (int): Liczba klas emocji do klasyfikacji
-        num_bands (int): Liczba pasm częstotliwościowych (domyślnie 5)
-        num_nodes (int): Liczba elektrod (domyślnie 32)
-        d_ff (int, optional): Wymiar warstwy feed-forward (domyślnie 4*d_model)
-        use_cnn (bool): Czy używać warstwy konwolucyjnej (domyślnie True)
     """
 
     def __init__(self, d_model, num_heads, num_layers=2, dropout=0.3, num_classes=7,
@@ -49,14 +86,14 @@ class EEG_class_model(nn.Module):
                 d_model=d_model,
                 num_nodes=num_nodes,
                 num_bands=num_bands,
-                kernel_size=3,  # Małe jądro dla lokalnych wzorców
+                kernel_size=3,
                 dropout=dropout
             )
 
-        # Pozycyjne enkodowanie - NOWY ELEMENT
+        # Pozycyjne enkodowanie - POPRAWIONE
         self.positional_encoding = PositionalEncoding(
             d_model=d_model,
-            max_len=num_bands + num_nodes,  # Maksymalna długość to suma pasm i elektrod
+            max_len=num_bands * num_nodes,  # POPRAWIONE: używamy mnożenia zamiast dodawania
             dropout=dropout
         )
 
@@ -77,12 +114,12 @@ class EEG_class_model(nn.Module):
             nn.Linear(d_model, 128),
             nn.Tanh(),
             nn.Linear(128, 1),
-            nn.Softmax(dim=1)  # Softmax po wymiarze pasm
+            nn.Softmax(dim=1)
         )
 
-        # Klasyfikator - ZWIĘKSZONY DROPOUT
+        # Klasyfikator
         self.classifier = nn.Sequential(
-            nn.Dropout(dropout * 1.5),  # Zwiększony dropout
+            nn.Dropout(dropout * 1.5),
             nn.Linear(d_model, d_model * 2),
             nn.LayerNorm(d_model * 2),
             nn.GELU(),
@@ -94,7 +131,7 @@ class EEG_class_model(nn.Module):
             nn.Linear(d_model, num_classes)
         )
 
-        # Inicjalizacja wag - NOWY ELEMENT
+        # Inicjalizacja wag
         self._init_weights()
 
     def _init_weights(self):
@@ -104,33 +141,21 @@ class EEG_class_model(nn.Module):
         for name, p in self.named_parameters():
             if 'weight' in name:
                 if len(p.shape) >= 2:
-                    # Inicjalizacja Kaiming dla warstw liniowych i konwolucyjnych
                     nn.init.kaiming_normal_(p, mode='fan_out', nonlinearity='relu')
                 else:
-                    # Inicjalizacja dla biasów i innych parametrów 1D
                     nn.init.normal_(p, mean=0.0, std=0.01)
             elif 'bias' in name:
                 nn.init.zeros_(p)
 
     def _normalize_per_sample(self, x):
         """
-        Normalizuje każdą próbkę EEG niezależnie - KLUCZOWE dla transformera.
-
-        Args:
-            x (Tensor): Dane EEG [batch, bands, nodes]
-
-        Returns:
-            Tensor: Znormalizowane dane EEG
+        Normalizuje każdą próbkę EEG niezależnie.
         """
         batch_size = x.shape[0]
-        flat_x = x.reshape(batch_size, -1)  # [batch, bands*nodes]
-
-        # Normalizacja Z-score dla każdej próbki
-        mean = flat_x.mean(dim=1, keepdim=True)  # [batch, 1]
-        std = flat_x.std(dim=1, keepdim=True) + 1e-8  # [batch, 1]
+        flat_x = x.reshape(batch_size, -1)
+        mean = flat_x.mean(dim=1, keepdim=True)
+        std = flat_x.std(dim=1, keepdim=True) + 1e-8
         flat_x = (flat_x - mean) / std
-
-        # Powrót do oryginalnego kształtu
         return flat_x.reshape(x.shape)
 
     def forward(self, x):
@@ -147,27 +172,14 @@ class EEG_class_model(nn.Module):
         if self.use_cnn:
             x = self.conv_layer(x)
 
-        # Zastosowanie BEZPOŚREDNIEGO pozycyjnego enkodowania zamiast używania self.positional_encoding
+        # Zastosowanie pozycyjnego enkodowania
         batch_size, num_bands, num_nodes, d_model = x.shape
 
         # Traktujemy każdą elektrodę w każdym paśmie jako oddzielny token
         x_seq = x.reshape(batch_size, num_bands * num_nodes, d_model)
 
-        # BEZPOŚREDNIE dodanie pozycyjnego enkodowania
-        seq_len = x_seq.size(1)
-        device = x_seq.device
-
-        # Generowanie pozycyjnego enkodowania na bieżąco
-        position = torch.arange(0, seq_len, dtype=torch.float, device=device).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2, device=device).float() * (-math.log(10000.0) / d_model))
-
-        pe = torch.zeros(1, seq_len, d_model, device=device)
-        pe[0, :, 0::2] = torch.sin(position * div_term)
-        pe[0, :, 1::2] = torch.cos(position * div_term)
-
-        # Dodanie do sekwencji
-        x_seq = x_seq + pe
-        x_seq = nn.functional.dropout(x_seq, p=self.dropout if hasattr(self, 'dropout') else 0.1, training=self.training)
+        # Dodajemy pozycyjne enkodowanie
+        x_seq = self.positional_encoding(x_seq)
 
         # Powrót do formatu 4D
         x = x_seq.reshape(batch_size, num_bands, num_nodes, d_model)
@@ -183,14 +195,13 @@ class EEG_class_model(nn.Module):
         x = x * self.scaling_factor
 
         # Agregacja informacji z elektrod poprzez uśrednianie
-        # [batch, bands, nodes, d_model] -> [batch, bands, d_model]
         x = x.mean(dim=2)
 
         # Obliczenie wag uwagi dla każdego pasma
-        band_weights = self.band_attention(x)  # [batch, bands, 1]
+        band_weights = self.band_attention(x)
 
         # Zastosowanie wag uwagi do agregacji pasm
-        x = (x * band_weights).sum(dim=1)  # [batch, d_model]
+        x = (x * band_weights).sum(dim=1)
 
         # Klasyfikacja
         logits = self.classifier(x)
@@ -200,14 +211,8 @@ class EEG_class_model(nn.Module):
     def get_band_attention_weights(self, x):
         """
         Zwraca wagi uwagi dla poszczególnych pasm częstotliwości.
-
-        Args:
-            x (Tensor): Tensor o kształcie [batch_size, num_bands, num_nodes]
-
-        Returns:
-            Tensor: Wagi uwagi o kształcie [batch_size, num_bands]
         """
-        # Normalizacja danych wejściowych per-sample - NOWY ELEMENT
+        # Normalizacja danych wejściowych per-sample
         x = self._normalize_per_sample(x)
 
         # Przekształcenie danych wejściowych
@@ -231,9 +236,9 @@ class EEG_class_model(nn.Module):
         x = x * self.scaling_factor
 
         # Agregacja po elektrodach
-        x = x.mean(dim=2)  # [batch, bands, d_model]
+        x = x.mean(dim=2)
 
         # Obliczenie wag uwagi
-        band_weights = self.band_attention(x)  # [batch, bands, 1]
+        band_weights = self.band_attention(x)
 
-        return band_weights.squeeze(-1)  # [batch, bands]
+        return band_weights.squeeze(-1)
