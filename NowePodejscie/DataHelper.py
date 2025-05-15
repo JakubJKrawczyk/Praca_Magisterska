@@ -1,109 +1,9 @@
+import random
 from operator import contains
 import scipy.io as sio
 import torch
 from torch.utils.data import Dataset, TensorDataset, DataLoader
 import numpy as np
-
-class EmotionDataset(Dataset):
-    """
-    Dataset przechowujący dane EEG wraz z etykietami emocji.
-
-    Każdy element datasetu to para (emotion_id, electrode_values), gdzie:
-    - emotion_id: identyfikator emocji (0-6)
-    - electrode_values: słownik zawierający wartości 5 pasm (delta, theta, alpha, beta, gamma)
-                         dla 32 elektrod
-    """
-    def __init__(self, emotion_data):
-        self.emotions = []
-        self.values = []
-        self.idx_to_emotion = {}
-
-        # Przypisujemy indeksy do emocji
-        for idx, emotion in enumerate(emotionsEnum.values()):
-            self.idx_to_emotion[idx] = emotion
-
-        # Wypełniamy listy danych
-        for emotion_array in emotion_data:
-            self.emotions.append(emotion_array["emotion_id"])
-            self.values.append(emotion_array["value"])
-
-        # Wyświetlenie informacji o danych
-        if len(self.values) > 0:
-            print(f"EmotionDataset created with {len(self.emotions)} samples")
-            print(f"Each sample contains values for 5 bands and 32 electrodes")
-
-    def tensorize(self):
-        """
-        Konwertuje dane na tensory PyTorch i zwraca TensorDataset.
-
-        Returns:
-            TensorDataset: Dataset zawierający parę tensorów (values, emotions)
-                emotions: tensor o wymiarze (n_samples,) - identyfikatory emocji
-                values: tensor o wymiarze (n_samples, 5, 32) - wartości z 5 pasm dla 32 elektrod
-        """
-        # Konwertujemy emocje na tensor
-        emotions_tensor = torch.tensor(self.emotions, dtype=torch.long)
-
-        # Konwertujemy słowniki pasm na tensor 3D [n_samples, 5, 32]
-        bands = ["delta", "theta", "alpha", "beta", "gamma"]
-        values_np = np.zeros((len(self.values), len(bands), 32), dtype=np.float32)
-
-        for i, sample in enumerate(self.values):
-            for j, band in enumerate(bands):
-                values_np[i, j] = np.array(sample[band], dtype=np.float32)
-
-        values_tensor = torch.tensor(values_np, dtype=torch.float)
-
-        # Normalizacja
-        values_tensor = DataHelper.normalize_de_features(values_tensor)
-
-        # Sprawdzenie wymiarów
-        print(f"Tensors created: emotions {emotions_tensor.shape}, values {values_tensor.shape}")
-
-        # Tworzenie TensorDataset
-        return TensorDataset(values_tensor, emotions_tensor)
-
-    def __len__(self):
-        return len(self.emotions)
-
-    def get_emotion(self, idx):
-        return self.idx_to_emotion[self.emotions[idx]]
-
-    def extend(self, other):
-        """
-        Rozszerza dataset o dane z innego EmotionDataset lub listy słowników.
-
-        Args:
-            other: Może być:
-                - EmotionDataset: Inna instancja EmotionDataset
-                - list: Lista słowników w formacie [{emotion_id: id, value: {delta: value, theta: value, ...}}]
-        """
-        if isinstance(other, EmotionDataset):
-            self.emotions.extend(other.emotions)
-            self.values.extend(other.values)
-        elif isinstance(other, list):
-            # Sprawdzamy czy lista zawiera słowniki w odpowiednim formacie
-            try:
-                for item in other:
-                    if "emotion_id" in item and "value" in item:
-                        # Weryfikacja kluczy we values
-                        required_bands = ["delta", "theta", "alpha", "beta", "gamma"]
-                        if all(band in item["value"] for band in required_bands):
-                            self.emotions.append(item["emotion_id"])
-                            self.values.append(item["value"])
-                        else:
-                            missing_bands = [band for band in required_bands if band not in item["value"]]
-                            raise ValueError(f"Missing bands in item's value: {missing_bands}")
-                    else:
-                        raise ValueError("Each item must contain 'emotion_id' and 'value' keys")
-
-                # Po przetworzeniu wyświetl informację o liczbie dodanych elementów
-                print(f"Added {len(other)} samples to dataset")
-
-            except (KeyError, ValueError) as e:
-                raise ValueError(f"Invalid format in the list: {str(e)}")
-        else:
-            raise TypeError("Can only add another EmotionDataset instance or a list of properly formatted dictionaries")
 
 
 # Mapowanie ID emocji na nazwy
@@ -116,23 +16,6 @@ emotionsEnum = {
     5: "Surprise",
     6: "Disgust"
 }
-
-# positiveNegative_enum = {
-#     0: "Negative",
-#     1: "Positive"
-# }
-
-# def mapuj_emocje(liczba : int, return_id : bool):
-#     if liczba in [1, 5, 0]:
-#         if return_id:
-#             return 1
-#         else:
-#             return positiveNegative_enum[1]
-#     elif liczba in [2, 3, 4, 6]:
-#         if return_id:
-#             return 0
-#         else:
-#             return positiveNegative_enum[0]
 
 # Mapowanie ID wideo na emocje
 VideoIdToEmotionMap = {
@@ -221,6 +104,59 @@ VideoIdToEmotionMap = {
     79: 2,  # Sad
     80: 6   # Disgust
 }
+
+
+class EEGWindowDataset(Dataset):
+    def __init__(self, eeg_sequences, emotion_labels, window_size=128, stride=None, overlap=0.75):
+        """
+        Dataset do przetwarzania EEG z oknami czasowymi.
+
+        Args:
+            eeg_sequences: Lista tensorów o kształcie [time, bands, probes] dla każdego filmu
+            emotion_labels: Lista etykiet emocji odpowiadających każdemu filmowi
+            window_size: Rozmiar okna czasowego (liczba próbek)
+            stride: Przesunięcie okna (jeśli None, używa wartości wyliczonej z overlap)
+            overlap: Nakładanie się okien (używane tylko jeśli stride=None)
+        """
+        self.eeg_sequences = eeg_sequences
+        self.emotion_labels = emotion_labels
+        self.window_size = window_size
+
+        if stride is None:
+            self.stride = int(window_size * (1 - overlap))
+        else:
+            self.stride = stride
+
+        # Przygotuj indeksy wszystkich możliwych okien
+        self.window_indices = []
+        for seq_idx, sequence in enumerate(eeg_sequences):
+            seq_length = sequence.shape[0]  # time dimension
+
+            # Wylicz wszystkie możliwe okna dla tej sekwencji
+            for start_idx in range(0, seq_length - window_size + 1, self.stride):
+                self.window_indices.append((seq_idx, start_idx))
+
+        # Opcjonalnie: Możesz przetasować indeksy okien
+        random.shuffle(self.window_indices)
+
+    def __len__(self):
+        return len(self.window_indices)
+
+    def __getitem__(self, idx):
+        seq_idx, start_idx = self.window_indices[idx]
+
+        # Pobierz odpowiedni wycinek danych
+        end_idx = start_idx + self.window_size
+        window_data = self.eeg_sequences[seq_idx][start_idx:end_idx]
+
+        # Zmień format na [bands, time, probes] dla modelu
+        window_data = window_data.permute(1, 0, 2)
+
+        # Pobierz etykietę dla tego filmu
+        label = self.emotion_labels[seq_idx]
+
+        return window_data, label
+
 
 class DataHelper:
     @staticmethod
@@ -333,18 +269,183 @@ class DataHelper:
 
         return processed_data
 
+    @staticmethod
+    def prepare_sequences_from_mat(mat_data):
+        """
+        Przygotowuje sekwencje EEG dla każdego filmu z pliku .mat.
+
+        Args:
+            mat_data: Dane z pliku .mat
+
+        Returns:
+            eeg_sequences: Lista sekwencji EEG w formacie [time, bands, probes]
+            emotion_labels: Lista etykiet emocji
+        """
+        # Indeksy 32 elektrod do wyboru (z 62)
+        selected_electrodes = [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24,
+                               26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50,
+                               53, 54, 55, 59]
+
+        eeg_sequences = []
+        emotion_labels = []
+
+        for key, array in mat_data.items():
+            try:
+                # Ekstrakcja emocji z kluczu
+                video_number = int(key.split("_")[2] if "LDS" in key else key.split("_")[1])
+                emotion = VideoIdToEmotionMap[video_number]
+
+                # Wybór 32 elektrod z 62
+                array = array[:, :, selected_electrodes]
+
+                # Format: [time, bands, probes]
+                eeg_sequences.append(torch.tensor(array, dtype=torch.float32))
+                emotion_labels.append(emotion)
+
+            except Exception as e:
+                print(f"Błąd przetwarzania {key}: {e}")
+
+        return eeg_sequences, emotion_labels
+
+    @staticmethod
+    def create_window_dataloader(mat_file_path, window_size=128, batch_size=32,
+                                 stride=None, overlap=0.75, shuffle=True, num_workers=4):
+        """
+        Tworzy DataLoader z oknami czasowymi bezpośrednio z pliku .mat.
+
+        Args:
+            mat_file_path: Ścieżka do pliku .mat
+            window_size: Rozmiar okna czasowego
+            batch_size: Rozmiar batcha
+            stride: Przesunięcie okna (jeśli None, używa overlap)
+            overlap: Nakładanie się okien (używane tylko jeśli stride=None)
+            shuffle: Czy mieszać dane
+            num_workers: Liczba wątków do ładowania danych
+
+        Returns:
+            DataLoader: DataLoader dla okien czasowych
+        """
+        # Wczytaj dane
+        mat_data = DataHelper.load_mat_file(mat_file_path)
+
+        # Przygotuj sekwencje
+        eeg_sequences, emotion_labels = DataHelper.prepare_sequences_from_mat(mat_data)
+
+        # Stwórz dataset
+        dataset = EEGWindowDataset(
+            eeg_sequences,
+            emotion_labels,
+            window_size=window_size,
+            stride=stride,
+            overlap=overlap
+        )
+
+        # Stwórz dataloader
+        return DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            pin_memory=True
+        )
+
+    @staticmethod
+    def create_cv_datasets(mat_file_path, num_folds=5, window_size=128,
+                           stride=None, overlap=0.75):
+        """
+        Tworzy zestawy danych do walidacji krzyżowej, gdzie każdy fold
+        zawiera inne filmy jako zestaw testowy.
+
+        Args:
+            mat_file_path: Ścieżka do pliku .mat
+            num_folds: Liczba foldów walidacji krzyżowej
+            window_size: Rozmiar okna czasowego
+            stride: Przesunięcie okna
+            overlap: Nakładanie się okien
+
+        Returns:
+            folds: Lista tupli (train_loader, val_loader) dla każdego foldu
+        """
+        # Wczytaj dane
+        mat_data = DataHelper.load_mat_file(mat_file_path)
+
+        # Przygotuj sekwencje
+        eeg_sequences, emotion_labels = DataHelper.prepare_sequences_from_mat(mat_data)
+
+        # Liczba sekwencji
+        num_sequences = len(eeg_sequences)
+
+        # Indeksy sekwencji
+        sequence_indices = list(range(num_sequences))
+
+        # Pomieszaj indeksy
+        np.random.shuffle(sequence_indices)
+
+        # Podziel indeksy na foldy
+        fold_size = num_sequences // num_folds
+        folds = []
+
+        for fold_idx in range(num_folds):
+            # Indeksy dla zestawu testowego
+            val_start = fold_idx * fold_size
+            val_end = (fold_idx + 1) * fold_size if fold_idx < num_folds - 1 else num_sequences
+            val_indices = sequence_indices[val_start:val_end]
+
+            # Indeksy dla zestawu treningowego
+            train_indices = [idx for idx in sequence_indices if idx not in val_indices]
+
+            # Przygotuj zestawy danych
+            train_sequences = [eeg_sequences[idx] for idx in train_indices]
+            train_labels = [emotion_labels[idx] for idx in train_indices]
+
+            val_sequences = [eeg_sequences[idx] for idx in val_indices]
+            val_labels = [emotion_labels[idx] for idx in val_indices]
+
+            # Stwórz datasety
+            train_dataset = EEGWindowDataset(
+                train_sequences, train_labels,
+                window_size=window_size, stride=stride, overlap=overlap
+            )
+
+            val_dataset = EEGWindowDataset(
+                val_sequences, val_labels,
+                window_size=window_size, stride=stride, overlap=overlap
+            )
+
+            # Stwórz dataloadery
+            train_loader = DataLoader(
+                train_dataset, batch_size=32, shuffle=True,
+                num_workers=4, pin_memory=True
+            )
+
+            val_loader = DataLoader(
+                val_dataset, batch_size=32, shuffle=False,
+                num_workers=4, pin_memory=True
+            )
+
+            folds.append((train_loader, val_loader))
+
+        return folds
+
 # Przykład użycia:
-# 1. Wczytanie danych z pliku .mat
-# mat_data = DataHelper.load_mat_file('sciezka_do_pliku.mat', lds=True)
+# 1. Utworzenie data loadera z oknami czasowymi
+# window_loader = DataHelper.create_window_dataloader(
+#     'sciezka_do_pliku.mat',
+#     window_size=128,
+#     batch_size=32,
+#     overlap=0.75
+# )
 #
-# 2. Konwersja danych do odpowiedniego formatu
-# processed_data = DataHelper.adapt_to_emotion_format(mat_data)
+# 2. Utworzenie zbiorów do walidacji krzyżowej
+# cv_folds = DataHelper.create_cv_datasets(
+#     'sciezka_do_pliku.mat',
+#     num_folds=5,
+#     window_size=128,
+#     overlap=0.75
+# )
 #
-# 3. Tworzenie datasetu
-# dataset = EmotionDataset(processed_data)
-#
-# 4. Konwersja na tensory
-# tensor_dataset = dataset.tensorize()
-#
-# 5. Utworzenie dataloaderaL
-# dataloader = DataLoader(tensor_dataset, batch_size=32, shuffle=True)
+# 3. Iteracja po batchu danych
+# for window_batch, labels in window_loader:
+#     # window_batch ma format [batch, bands, time, probes]
+#     outputs = model(window_batch)
+#     # ...

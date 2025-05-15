@@ -145,23 +145,37 @@ class BidirectionalLSTMWithAttention(nn.Module):
         return out
 
 
-class ImprovedEEGClassifier(nn.Module):
-    def __init__(self, input_time_samples, num_frequency_bands=5, num_probes=62,
+class WindowBasedEEGClassifier(nn.Module):
+    def __init__(self, window_size=128, window_stride=16, num_frequency_bands=5, num_probes=62,
                  num_classes=2, temporal_filters=64, spatial_filters=128,
                  transformer_dim=256, nhead=8, num_layers=4, dropout=0.3):
-        super(ImprovedEEGClassifier, self).__init__()
+        super(WindowBasedEEGClassifier, self).__init__()
 
-        self.input_time_samples = input_time_samples
+        self.window_size = window_size
+        self.window_stride = window_stride
         self.num_frequency_bands = num_frequency_bands
         self.num_probes = num_probes
 
-        # Temporal-Spatial Block for feature extraction
+        # LSTM dla każdego pasma częstotliwości
+        self.lstm_layers = nn.ModuleList([
+            nn.LSTM(
+                input_size=num_probes,
+                hidden_size=64,
+                num_layers=2,
+                batch_first=True,
+                dropout=dropout
+            )
+            for _ in range(num_frequency_bands)
+        ])
+
+        # Temporal-Spatial Block dla przetwarzania przestrzenno-czasowego
+        # Przyjmuje dane w formacie [batch, channels=frequency_bands, width=time, height=features]
         self.feature_extractor = nn.Sequential(
             TemporalSpatialBlock(num_frequency_bands, temporal_filters, temporal_filters, num_probes),
             TemporalSpatialBlock(temporal_filters, temporal_filters, spatial_filters, num_probes)
         )
 
-        # BiLSTM with attention
+        # BiLSTM with attention do zaawansowanego przetwarzania sekwencyjnego
         self.bilstm_attn = BidirectionalLSTMWithAttention(
             input_size=spatial_filters * num_probes,
             hidden_size=transformer_dim // 2,  # Dzielenie przez 2, ponieważ BiLSTM podwaja wymiar
@@ -169,8 +183,8 @@ class ImprovedEEGClassifier(nn.Module):
             dropout=dropout
         )
 
-        # Positional encoding
-        self.pos_encoder = PositionalEncoding(transformer_dim, max_len=input_time_samples)
+        # Positional encoding dla transformera
+        self.pos_encoder = PositionalEncoding(transformer_dim, max_len=window_size)
 
         # Transformer encoder
         encoder_layer = TransformerEncoderLayer(
@@ -178,9 +192,9 @@ class ImprovedEEGClassifier(nn.Module):
             nhead=nhead,
             dim_feedforward=transformer_dim * 4,
             dropout=dropout,
-            activation="gelu",  # GELU for transformer is often better
+            activation="gelu",
             batch_first=True,
-            norm_first=True  # Pre-norm architecture dla stabilności
+            norm_first=True
         )
         self.transformer_encoder = TransformerEncoder(encoder_layer, num_layers=num_layers)
 
@@ -190,7 +204,7 @@ class ImprovedEEGClassifier(nn.Module):
             nn.Softmax(dim=1)
         )
 
-        # Classifier with multiple layers
+        # Classifier
         self.classifier = nn.Sequential(
             nn.Linear(transformer_dim, transformer_dim // 2),
             nn.LayerNorm(transformer_dim // 2),
@@ -200,27 +214,52 @@ class ImprovedEEGClassifier(nn.Module):
         )
 
     def forward(self, x):
-        # Wejście: [batch, time_samples, frequency_bands, probes]
+        """
+        Przetwarza dane EEG z wykorzystaniem okna czasowego.
+
+        Args:
+            x: Tensor o kształcie [batch, bands, window_size, probes]
+                gdzie window_size to długość okna czasowego
+
+        Returns:
+            logits: Predykcje dla klas
+        """
+        # Wejście: [batch, bands, window_size, probes]
         batch_size = x.size(0)
 
-        # Permutacja do [batch, frequency_bands, time_samples, probes]
+        # Przetwarzanie każdego pasma częstotliwości przez LSTM
+        processed_bands = []
+        for band_idx in range(self.num_frequency_bands):
+            # Pobierz dane dla jednego pasma
+            band_data = x[:, band_idx, :, :]  # [batch, window_size, probes]
+
+            # Zastosuj LSTM
+            band_lstm_out, _ = self.lstm_layers[band_idx](band_data)
+            # band_lstm_out: [batch, window_size, hidden_size=64]
+
+            processed_bands.append(band_lstm_out)
+
+        # Łączymy przetworzone pasma w jeden tensor 4D
+        # [batch, bands, window_size, hidden_size]
+        x_lstm = torch.stack(processed_bands, dim=1)
+
+        # Ekstrakcja cech przestrzenno-czasowych za pomocą CNN
+        # [batch, bands, window_size, hidden_size] -> [batch, filters, window_size, features]
+        x = self.feature_extractor(x_lstm)
+
+        # Zmiana kształtu dla przetwarzania sekwencyjnego
+        # [batch, filters, window_size, features] -> [batch, window_size, features*filters]
         x = x.permute(0, 2, 1, 3)
+        x = x.reshape(batch_size, self.window_size, -1)
 
-        # Ekstrakcja cech z CNN
-        x = self.feature_extractor(x)
-
-        # Zmiana kształtu dla modelu sekwencyjnego: [batch, time_samples, features]
-        x = x.permute(0, 2, 1, 3)
-        x = x.reshape(batch_size, self.input_time_samples, -1)
-
-        # BiLSTM z attention
+        # BiLSTM z attention - zaawansowane przetwarzanie sekwencyjne
         x = self.bilstm_attn(x)
 
-        # Positional encoding + transformer
+        # Positional encoding i transformer
         x = self.pos_encoder(x)
         transformer_out = self.transformer_encoder(x)
 
-        # Attention pooling dla lepszej agregacji kontekstu
+        # Global attention pooling - agregacja kontekstu
         attn_weights = self.global_attention_pool(transformer_out)
         context_vector = torch.sum(attn_weights * transformer_out, dim=1)
 
@@ -228,3 +267,59 @@ class ImprovedEEGClassifier(nn.Module):
         output = self.classifier(context_vector)
 
         return output
+
+    def predict_with_sliding_window(self, eeg_data, overlap=0.75):
+        """
+        Wykonuje predykcję używając techniki przesuwnego okna.
+
+        Args:
+            eeg_data: Tensor o kształcie [bands, time_samples, probes]
+                      Cały sygnał EEG
+            overlap: Stopień nakładania się okien (domyślnie 0.75)
+
+        Returns:
+            predictions: Średnie predykcje ze wszystkich okien
+            all_logits: Predykcje dla każdego okna
+        """
+        # Parametry okna
+        window_size = self.window_size
+        stride = int(window_size * (1 - overlap))  # Przesunięcie okna
+
+        # Wymiary sygnału
+        bands, total_time, probes = eeg_data.shape
+
+        # Liczba okien
+        n_windows = max(1, (total_time - window_size) // stride + 1)
+
+        # Predykcje dla każdego okna
+        all_logits = []
+
+        # Przetwarzanie każdego okna
+        for i in range(n_windows):
+            start_idx = i * stride
+            end_idx = min(start_idx + window_size, total_time)
+
+            # Jeśli okno jest krótsze niż window_size, uzupełnij zerami
+            if end_idx - start_idx < window_size:
+                padding_size = window_size - (end_idx - start_idx)
+                padding = torch.zeros((bands, padding_size, probes), device=eeg_data.device)
+                window_data = torch.cat([eeg_data[:, start_idx:end_idx, :], padding], dim=1)
+            else:
+                # Wytnij okno z sygnału
+                window_data = eeg_data[:, start_idx:end_idx, :]
+
+            # Dodaj wymiar batcha
+            window_data = window_data.unsqueeze(0)  # [1, bands, window_size, probes]
+
+            # Wykonaj predykcję
+            with torch.no_grad():
+                logits = self(window_data)
+                all_logits.append(logits)
+
+        # Złącz wyniki ze wszystkich okien
+        all_logits = torch.cat(all_logits, dim=0)
+
+        # Uśrednij predykcje
+        avg_prediction = torch.mean(all_logits, dim=0, keepdim=True)
+
+        return avg_prediction, all_logits
