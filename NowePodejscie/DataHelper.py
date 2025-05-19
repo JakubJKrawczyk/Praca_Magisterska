@@ -251,6 +251,9 @@ class DataHelper:
             for idx, mat in enumerate(files):
                 data.append(DataHelper.load_processed_data_from_mat_file(os.path.join(data_dir_file, mat)))
                 data_to_emotion_idx[idx] = VideoIdToEmotionMap[idx+1]
+
+
+                #TODO: zmodyfikować wczytanbie żeby każdy plik wideo wczytywał osobno a nie per file w trybioe Dict
             return FilmWindowDataset(data, data_to_emotion_idx, 128, 16, True)
         elif all(s.endswith(".cnt") for s in files):
             for cnt in files:
