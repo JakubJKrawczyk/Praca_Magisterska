@@ -111,18 +111,21 @@ class BidirectionalLSTMWithAttention(nn.Module):
         super(BidirectionalLSTMWithAttention, self).__init__()
 
         self.hidden_size = hidden_size
+        # Store the input size for debugging
+        self.input_size = input_size
+
         self.lstm = nn.LSTM(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
-            bidirectional=True,  # Bidirectional dla lepszego kontekstu
+            bidirectional=True,
             dropout=dropout if num_layers > 1 else 0
         )
 
-        # Self-attention dla sekwencji LSTM
+        # Self-attention for LSTM sequence
         self.attention = nn.MultiheadAttention(
-            embed_dim=hidden_size * 2,  # *2 dla dwukierunkowego LSTM
+            embed_dim=hidden_size * 2,  # *2 for bidirectional
             num_heads=8,
             dropout=dropout,
             batch_first=True
@@ -132,8 +135,11 @@ class BidirectionalLSTMWithAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        # LSTM processing
-        lstm_out, _ = self.lstm(x)  # [batch, seq_len, hidden_size*2]
+        # Print dimensions for debugging
+        print(f"BiLSTM input shape: {x.shape}, expected features: {self.input_size}")
+
+        # LSTM processing - FIXED SYNTAX
+        lstm_out, (h_n, c_n) = self.lstm(x)
 
         # Self-attention
         attn_out, _ = self.attention(lstm_out, lstm_out, lstm_out)
@@ -145,126 +151,107 @@ class BidirectionalLSTMWithAttention(nn.Module):
         return out
 
 
-class WindowBasedEEGClassifier(nn.Module):
-    def __init__(self, window_size=128, window_stride=16, num_frequency_bands=5, num_probes=62,
-                 num_classes=2, temporal_filters=64, spatial_filters=128,
-                 transformer_dim=256, nhead=8, num_layers=4, dropout=0.3):
-        super(WindowBasedEEGClassifier, self).__init__()
+class AdaptiveEEGClassifier(nn.Module):
+    def __init__(self, window_size=5, num_frequency_bands=5, num_probes=32,
+                 num_classes=7, dropout=0.3):
+        super(AdaptiveEEGClassifier, self).__init__()
 
         self.window_size = window_size
-        self.window_stride = window_stride
         self.num_frequency_bands = num_frequency_bands
         self.num_probes = num_probes
 
-        # LSTM dla każdego pasma częstotliwości
+        # Basic LSTM for each frequency band
+        hidden_size = 64
         self.lstm_layers = nn.ModuleList([
             nn.LSTM(
                 input_size=num_probes,
-                hidden_size=64,
-                num_layers=2,
+                hidden_size=hidden_size,
+                num_layers=1,
                 batch_first=True,
-                dropout=dropout
+                dropout=0
             )
             for _ in range(num_frequency_bands)
         ])
 
-        # Temporal-Spatial Block dla przetwarzania przestrzenno-czasowego
-        # Przyjmuje dane w formacie [batch, channels=frequency_bands, width=time, height=features]
+        # Simple feature extractor (more robust than complex CNNs)
         self.feature_extractor = nn.Sequential(
-            TemporalSpatialBlock(num_frequency_bands, temporal_filters, temporal_filters, num_probes),
-            TemporalSpatialBlock(temporal_filters, temporal_filters, spatial_filters, num_probes)
+            nn.Conv2d(num_frequency_bands, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU()
         )
 
-        # BiLSTM with attention do zaawansowanego przetwarzania sekwencyjnego
-        self.bilstm_attn = BidirectionalLSTMWithAttention(
-            input_size=spatial_filters * num_probes,
-            hidden_size=transformer_dim // 2,  # Dzielenie przez 2, ponieważ BiLSTM podwaja wymiar
-            num_layers=2,
-            dropout=dropout
-        )
+        # Feature dimension calculation (will be determined during first forward pass)
+        self.feature_dim = None
 
-        # Positional encoding dla transformera
-        self.pos_encoder = PositionalEncoding(transformer_dim, max_len=window_size)
+        # Final classifier (will be initialized during first forward pass)
+        self.classifier = None
+        self.num_classes = num_classes
+        self.dropout = dropout
 
-        # Transformer encoder
-        encoder_layer = TransformerEncoderLayer(
-            d_model=transformer_dim,
-            nhead=nhead,
-            dim_feedforward=transformer_dim * 4,
-            dropout=dropout,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True
-        )
-        self.transformer_encoder = TransformerEncoder(encoder_layer, num_layers=num_layers)
-
-        # Global context aggregation
-        self.global_attention_pool = nn.Sequential(
-            nn.Linear(transformer_dim, 1),
-            nn.Softmax(dim=1)
-        )
-
-        # Classifier
+    def _initialize_classifier(self, feature_dim):
+        """Initializes the classifier with the correct input dimension"""
+        self.feature_dim = feature_dim
         self.classifier = nn.Sequential(
-            nn.Linear(transformer_dim, transformer_dim // 2),
-            nn.LayerNorm(transformer_dim // 2),
-            nn.ELU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(transformer_dim // 2, num_classes)
-        )
+            nn.Dropout(self.dropout),
+            nn.Linear(feature_dim, 256),
+            nn.ReLU(),
+            nn.Dropout(self.dropout),
+            nn.Linear(256, self.num_classes)
+        ).to(next(self.parameters()).device)  # Ensure it's on the same device
+        print(f"Initialized classifier with input dimension: {feature_dim}")
 
     def forward(self, x):
-        """
-        Przetwarza dane EEG z wykorzystaniem okna czasowego.
+        # Input debugging
+        # print(f"Input tensor shape: {x.shape}")
 
-        Args:
-            x: Tensor o kształcie [batch, bands, window_size, probes]
-                gdzie window_size to długość okna czasowego
+        # Handle different input formats
+        if x.dim() == 5:  # [batch, windows, bands, time, probes]
+            batch_size, num_windows = x.size(0), x.size(1)
+            x = x.reshape(-1, x.size(2), x.size(3), x.size(4))
+        else:  # [batch, bands, time, probes]
+            batch_size, num_windows = x.size(0), 1
 
-        Returns:
-            logits: Predykcje dla klas
-        """
-        # Wejście: [batch, bands, window_size, probes]
-        batch_size = x.size(0)
-
-        # Przetwarzanie każdego pasma częstotliwości przez LSTM
+        # Process each band with LSTM
         processed_bands = []
         for band_idx in range(self.num_frequency_bands):
-            # Pobierz dane dla jednego pasma
-            band_data = x[:, band_idx, :, :]  # [batch, window_size, probes]
+            band_data = x[:, band_idx, :, :]  # [batch*windows, time, probes]
 
-            # Zastosuj LSTM
-            band_lstm_out, _ = self.lstm_layers[band_idx](band_data)
-            # band_lstm_out: [batch, window_size, hidden_size=64]
+            try:
+                # Process with LSTM
+                band_lstm_out, _ = self.lstm_layers[band_idx](band_data)
 
-            processed_bands.append(band_lstm_out)
+                # Use either the entire sequence or just the last output
+                if band_data.size(1) > 1:
+                    # Average across time dimension for robustness
+                    band_feat = torch.mean(band_lstm_out, dim=1)
+                else:
+                    band_feat = band_lstm_out.squeeze(1)
 
-        # Łączymy przetworzone pasma w jeden tensor 4D
-        # [batch, bands, window_size, hidden_size]
-        x_lstm = torch.stack(processed_bands, dim=1)
+                processed_bands.append(band_feat)
 
-        # Ekstrakcja cech przestrzenno-czasowych za pomocą CNN
-        # [batch, bands, window_size, hidden_size] -> [batch, filters, window_size, features]
-        x = self.feature_extractor(x_lstm)
+            except Exception as e:
+                print(f"Error processing band {band_idx}: {e}")
+                print(f"Band data shape: {band_data.shape}")
+                print(f"LSTM expected input size: {self.lstm_layers[band_idx].input_size}")
+                raise
 
-        # Zmiana kształtu dla przetwarzania sekwencyjnego
-        # [batch, filters, window_size, features] -> [batch, window_size, features*filters]
-        x = x.permute(0, 2, 1, 3)
-        x = x.reshape(batch_size, self.window_size, -1)
+        # Combine band features
+        combined_features = torch.cat(processed_bands, dim=1)
 
-        # BiLSTM z attention - zaawansowane przetwarzanie sekwencyjne
-        x = self.bilstm_attn(x)
+        # Initialize classifier if needed
+        if self.classifier is None:
+            self._initialize_classifier(combined_features.size(1))
 
-        # Positional encoding i transformer
-        x = self.pos_encoder(x)
-        transformer_out = self.transformer_encoder(x)
+        # Final classification
+        output = self.classifier(combined_features)
 
-        # Global attention pooling - agregacja kontekstu
-        attn_weights = self.global_attention_pool(transformer_out)
-        context_vector = torch.sum(attn_weights * transformer_out, dim=1)
-
-        # Klasyfikacja
-        output = self.classifier(context_vector)
+        # Reshape output if needed for multiple windows
+        if num_windows > 1:
+            output = output.view(batch_size, num_windows, -1)
+            output = output.mean(dim=1)  # Average across windows
 
         return output
 

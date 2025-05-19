@@ -5,7 +5,6 @@ import torch
 from torch.utils.data import Dataset, TensorDataset, DataLoader
 import numpy as np
 
-
 # Mapowanie ID emocji na nazwy
 emotionsEnum = {
     0: "Neutral",
@@ -102,60 +101,119 @@ VideoIdToEmotionMap = {
     77: 5,  # Surprise
     78: 4,  # Fear
     79: 2,  # Sad
-    80: 6   # Disgust
+    80: 6  # Disgust
 }
 
 
-class EEGWindowDataset(Dataset):
-    def __init__(self, eeg_sequences, emotion_labels, window_size=128, stride=None, overlap=0.75):
+class FilmWindowDataset(Dataset):
+    def __init__(self, eeg_sequences, emotion_labels, num_windows=5, overlap=0.5):
         """
-        Dataset do przetwarzania EEG z oknami czasowymi.
+        Dataset tworzący okna czasowe dla filmów tak, by najkrótszy film miał dokładnie
+        określoną liczbę okien (domyślnie 5).
 
         Args:
             eeg_sequences: Lista tensorów o kształcie [time, bands, probes] dla każdego filmu
             emotion_labels: Lista etykiet emocji odpowiadających każdemu filmowi
-            window_size: Rozmiar okna czasowego (liczba próbek)
-            stride: Przesunięcie okna (jeśli None, używa wartości wyliczonej z overlap)
-            overlap: Nakładanie się okien (używane tylko jeśli stride=None)
+            num_windows: Ile okien powinien mieć najkrótszy film (domyślnie 5)
+            overlap: Nakładanie się okien (domyślnie 50%)
         """
         self.eeg_sequences = eeg_sequences
         self.emotion_labels = emotion_labels
-        self.window_size = window_size
+        self.num_windows = num_windows
+        self.overlap = overlap
 
-        if stride is None:
-            self.stride = int(window_size * (1 - overlap))
-        else:
-            self.stride = stride
+        # Znajdź najkrótszy film
+        min_sequence_length = min([seq.shape[0] for seq in eeg_sequences])
 
-        # Przygotuj indeksy wszystkich możliwych okien
-        self.window_indices = []
-        for seq_idx, sequence in enumerate(eeg_sequences):
-            seq_length = sequence.shape[0]  # time dimension
+        # Oblicz rozmiar okna tak, aby najkrótszy film miał dokładnie num_windows okien
+        # Dla nakładania 50% i 5 okien potrzebujemy 3 pełne długości okna
+        # (1 pełne okno + 4 * 0.5 okna = 3 okna)
+        effective_segments = 1 + (num_windows - 1) * (1 - overlap)
+        self.window_size = int(min_sequence_length / effective_segments)
 
-            # Wylicz wszystkie możliwe okna dla tej sekwencji
-            for start_idx in range(0, seq_length - window_size + 1, self.stride):
-                self.window_indices.append((seq_idx, start_idx))
+        # Oblicz przesunięcie okna na podstawie nakładania
+        self.stride = int(self.window_size * (1 - overlap))
 
-        # Opcjonalnie: Możesz przetasować indeksy okien
-        random.shuffle(self.window_indices)
+        print(f"Najkrótszy film: {min_sequence_length} próbek")
+        print(f"Używanie okna o wielkości {self.window_size} próbek z przesunięciem {self.stride} próbek")
+        print(f"Najkrótszy film będzie miał {num_windows} okien")
+
+        # Przygotuj indeksy filmów i oblicz liczbę okien dla każdego filmu
+        self.film_indices = []
+        self.windows_per_film = []
+
+        for film_idx, sequence in enumerate(eeg_sequences):
+            seq_length = sequence.shape[0]  # Długość filmu
+
+            # Oblicz liczbę możliwych okien dla tego filmu
+            num_film_windows = max(1, (seq_length - self.window_size) // self.stride + 1)
+            self.windows_per_film.append(num_film_windows)
+            self.film_indices.append(film_idx)
+
+        total_windows = sum(self.windows_per_film)
+        print(f"Załadowano {len(self.film_indices)} filmów z łączną liczbą {total_windows} okien")
 
     def __len__(self):
-        return len(self.window_indices)
+        # Zwraca liczbę filmów (nie okien)
+        return len(self.film_indices)
+
+    def get_film_windows(self, film_idx):
+        """
+        Zwraca wszystkie okna dla danego filmu jako batch.
+
+        Args:
+            film_idx: Indeks filmu
+
+        Returns:
+            Tensor okien o kształcie [num_windows, bands, window_size, probes]
+            Etykieta emocji dla tego filmu
+        """
+        sequence = self.eeg_sequences[film_idx]
+        seq_length = sequence.shape[0]
+
+        # Lista okien dla tego filmu
+        windows = []
+
+        # Generuj okna z odpowiednim nakładaniem
+        for window_start in range(0, seq_length - self.window_size + 1, self.stride):
+            window_end = window_start + self.window_size
+
+            # Wytnij okno czasowe
+            window = sequence[window_start:window_end]
+
+            # Zmień format na [bands, time, probes]
+            window = window.permute(1, 0, 2)
+
+            windows.append(window)
+
+        # Stack wszystkich okien dla danego filmu
+        if windows:
+            film_windows = torch.stack(windows)
+        else:
+            # Awaryjnie, jeśli nie można utworzyć żadnego pełnego okna
+            print(f"Ostrzeżenie: Film {film_idx} nie ma wystarczającej liczby próbek")
+            # Utwórz jedno okno z dostępnych danych, uzupełnione zerami
+            padded_window = torch.zeros((self.window_size, sequence.shape[1], sequence.shape[2]),
+                                        device=sequence.device)
+            padded_window[:min(seq_length, self.window_size)] = sequence[:min(seq_length, self.window_size)]
+            padded_window = padded_window.permute(1, 0, 2)
+            film_windows = padded_window.unsqueeze(0)
+
+        # Zwróć okna i etykietę dla filmu
+        return film_windows, self.emotion_labels[film_idx]
 
     def __getitem__(self, idx):
-        seq_idx, start_idx = self.window_indices[idx]
+        """
+        Zwraca wszystkie okna dla danego filmu jako pojedynczy element.
 
-        # Pobierz odpowiedni wycinek danych
-        end_idx = start_idx + self.window_size
-        window_data = self.eeg_sequences[seq_idx][start_idx:end_idx]
+        Args:
+            idx: Indeks filmu (nie okna)
 
-        # Zmień format na [bands, time, probes] dla modelu
-        window_data = window_data.permute(1, 0, 2)
-
-        # Pobierz etykietę dla tego filmu
-        label = self.emotion_labels[seq_idx]
-
-        return window_data, label
+        Returns:
+            Tensor okien dla filmu i etykietę emocji
+        """
+        film_idx = self.film_indices[idx]
+        return self.get_film_windows(film_idx)
 
 
 class DataHelper:
@@ -280,6 +338,7 @@ class DataHelper:
         Returns:
             eeg_sequences: Lista sekwencji EEG w formacie [time, bands, probes]
             emotion_labels: Lista etykiet emocji
+            video_numbers: Lista numerów filmów
         """
         # Indeksy 32 elektrod do wyboru (z 62)
         selected_electrodes = [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24,
@@ -288,10 +347,11 @@ class DataHelper:
 
         eeg_sequences = []
         emotion_labels = []
+        video_numbers = []
 
         for key, array in mat_data.items():
             try:
-                # Ekstrakcja emocji z kluczu
+                # Ekstrakcja numeru filmu z klucza
                 video_number = int(key.split("_")[2] if "LDS" in key else key.split("_")[1])
                 emotion = VideoIdToEmotionMap[video_number]
 
@@ -301,57 +361,57 @@ class DataHelper:
                 # Format: [time, bands, probes]
                 eeg_sequences.append(torch.tensor(array, dtype=torch.float32))
                 emotion_labels.append(emotion)
+                video_numbers.append(video_number)
+
+                print(f"Przetworzono film {video_number}: {array.shape[0]} próbek, emocja: {emotionsEnum[emotion]}")
 
             except Exception as e:
                 print(f"Błąd przetwarzania {key}: {e}")
 
-        return eeg_sequences, emotion_labels
+        return eeg_sequences, emotion_labels, video_numbers
 
     @staticmethod
-    def create_window_dataloader(mat_file_path, window_size=128, batch_size=32,
-                                 stride=None, overlap=0.75, shuffle=True, num_workers=4):
+    def create_film_window_dataloader(mat_file_path, num_windows=5, batch_size=1,
+                                      shuffle=True, num_workers=4):
         """
-        Tworzy DataLoader z oknami czasowymi bezpośrednio z pliku .mat.
+        Tworzy DataLoader zwracający batche okien dla każdego filmu, zapewniając,
+        że najkrótszy film ma dokładnie num_windows okien.
 
         Args:
             mat_file_path: Ścieżka do pliku .mat
-            window_size: Rozmiar okna czasowego
-            batch_size: Rozmiar batcha
-            stride: Przesunięcie okna (jeśli None, używa overlap)
-            overlap: Nakładanie się okien (używane tylko jeśli stride=None)
-            shuffle: Czy mieszać dane
+            num_windows: Liczba okien dla najkrótszego filmu (domyślnie 5)
+            batch_size: Ile filmów w batchu (zalecane 1)
+            shuffle: Czy mieszać filmy
             num_workers: Liczba wątków do ładowania danych
 
         Returns:
-            DataLoader: DataLoader dla okien czasowych
+            DataLoader: DataLoader dla filmów z oknami
         """
         # Wczytaj dane
         mat_data = DataHelper.load_mat_file(mat_file_path)
 
         # Przygotuj sekwencje
-        eeg_sequences, emotion_labels = DataHelper.prepare_sequences_from_mat(mat_data)
+        eeg_sequences, emotion_labels, video_numbers = DataHelper.prepare_sequences_from_mat(mat_data)
 
         # Stwórz dataset
-        dataset = EEGWindowDataset(
+        dataset = FilmWindowDataset(
             eeg_sequences,
             emotion_labels,
-            window_size=window_size,
-            stride=stride,
-            overlap=overlap
+            num_windows=num_windows,  # Najkrótszy film będzie miał 5 okien
+            overlap=0.5  # 50% nakładania się
         )
 
         # Stwórz dataloader
         return DataLoader(
             dataset,
-            batch_size=batch_size,
+            batch_size=batch_size,  # Zwykle 1, bo każdy film ma wiele okien
             shuffle=shuffle,
             num_workers=num_workers,
             pin_memory=True
         )
 
     @staticmethod
-    def create_cv_datasets(mat_file_path, num_folds=5, window_size=128,
-                           stride=None, overlap=0.75):
+    def create_cv_datasets_per_film(mat_file_path, num_folds=5, num_windows=5, overlap=0.5):
         """
         Tworzy zestawy danych do walidacji krzyżowej, gdzie każdy fold
         zawiera inne filmy jako zestaw testowy.
@@ -359,9 +419,8 @@ class DataHelper:
         Args:
             mat_file_path: Ścieżka do pliku .mat
             num_folds: Liczba foldów walidacji krzyżowej
-            window_size: Rozmiar okna czasowego
-            stride: Przesunięcie okna
-            overlap: Nakładanie się okien
+            num_windows: Liczba okien dla najkrótszego filmu (domyślnie 5)
+            overlap: Nakładanie się okien (50%)
 
         Returns:
             folds: Lista tupli (train_loader, val_loader) dla każdego foldu
@@ -370,12 +429,12 @@ class DataHelper:
         mat_data = DataHelper.load_mat_file(mat_file_path)
 
         # Przygotuj sekwencje
-        eeg_sequences, emotion_labels = DataHelper.prepare_sequences_from_mat(mat_data)
+        eeg_sequences, emotion_labels, video_numbers = DataHelper.prepare_sequences_from_mat(mat_data)
 
-        # Liczba sekwencji
+        # Liczba sekwencji (filmów)
         num_sequences = len(eeg_sequences)
 
-        # Indeksy sekwencji
+        # Indeksy filmów
         sequence_indices = list(range(num_sequences))
 
         # Pomieszaj indeksy
@@ -402,50 +461,27 @@ class DataHelper:
             val_labels = [emotion_labels[idx] for idx in val_indices]
 
             # Stwórz datasety
-            train_dataset = EEGWindowDataset(
+            train_dataset = FilmWindowDataset(
                 train_sequences, train_labels,
-                window_size=window_size, stride=stride, overlap=overlap
+                num_windows=num_windows, overlap=overlap
             )
 
-            val_dataset = EEGWindowDataset(
+            val_dataset = FilmWindowDataset(
                 val_sequences, val_labels,
-                window_size=window_size, stride=stride, overlap=overlap
+                num_windows=num_windows, overlap=overlap
             )
 
             # Stwórz dataloadery
             train_loader = DataLoader(
-                train_dataset, batch_size=32, shuffle=True,
+                train_dataset, batch_size=1, shuffle=True,
                 num_workers=4, pin_memory=True
             )
 
             val_loader = DataLoader(
-                val_dataset, batch_size=32, shuffle=False,
+                val_dataset, batch_size=1, shuffle=False,
                 num_workers=4, pin_memory=True
             )
 
             folds.append((train_loader, val_loader))
 
         return folds
-
-# Przykład użycia:
-# 1. Utworzenie data loadera z oknami czasowymi
-# window_loader = DataHelper.create_window_dataloader(
-#     'sciezka_do_pliku.mat',
-#     window_size=128,
-#     batch_size=32,
-#     overlap=0.75
-# )
-#
-# 2. Utworzenie zbiorów do walidacji krzyżowej
-# cv_folds = DataHelper.create_cv_datasets(
-#     'sciezka_do_pliku.mat',
-#     num_folds=5,
-#     window_size=128,
-#     overlap=0.75
-# )
-#
-# 3. Iteracja po batchu danych
-# for window_batch, labels in window_loader:
-#     # window_batch ma format [batch, bands, time, probes]
-#     outputs = model(window_batch)
-#     # ...
