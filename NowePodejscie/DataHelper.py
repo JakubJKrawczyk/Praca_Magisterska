@@ -212,19 +212,19 @@ class DataHelper:
     @staticmethod
     def load_processed_data_from_mat_file(file_path, lds=False):
         mat_data = sio.loadmat(file_path)
-
-        if lds:
-            processed = {}
-            for key in mat_data.keys():
-                if contains(key, "LDS"):
-                    processed[key] = mat_data[key]
-            return processed
-        else:
-            processed = {}
-            for key in mat_data.keys():
-                if contains(key, "de") and not contains(key, "LDS") and not contains(key, "__header__"):
-                    processed[key] = mat_data[key]
-            return processed
+        return mat_data
+        # if lds:
+        #     processed = {}
+        #     for key in mat_data.keys():
+        #         if contains(key, "LDS"):
+        #             processed[key] = mat_data[key]
+        #     return processed
+        # else:
+        #     processed = {}
+        #     for key in mat_data.keys():
+        #         if contains(key, "de") and not contains(key, "LDS") and not contains(key, "__header__"):
+        #             processed[key] = mat_data[key]
+        #     return processed
 
     @staticmethod
     def load_raw_data_from_file(file_path):
@@ -246,10 +246,12 @@ class DataHelper:
     def prepare_data(data_dir_file):
         files = os.listdir(data_dir_file)
         data = []
-        data_to_emotion_idx = []
+        data_to_emotion_idx = [0 for i in range(len(files))]
         if all(s.endswith(".mat") for s in files):
             for idx, mat in enumerate(files):
-                data.append(DataHelper.load_processed_data_from_mat_file(data_dir_file + mat))
+                data.append(DataHelper.load_processed_data_from_mat_file(os.path.join(data_dir_file, mat)))
+                data_to_emotion_idx[idx] = VideoIdToEmotionMap[idx+1]
+            return FilmWindowDataset(data, data_to_emotion_idx, 128, 16, True)
         elif all(s.endswith(".cnt") for s in files):
             for cnt in files:
                 data.append(DataHelper.load_raw_data_from_file(data_dir_file + cnt))

@@ -29,12 +29,7 @@ random.seed(seed)
 # Tworzenie walidacji krzyżowej z filmami
 all_folds = []
 
-for file_idx, file in enumerate(data_files):
-    path = os.path.join(data_dir, file)
-    print(f"Przetwarzanie pliku {file_idx + 1}/{len(data_files)}: {file}")
-
-    # Tworzenie foldów walidacji krzyżowej z 5 oknami dla najkrótszego filmu
-    DataHelper.load_processed_data_from_mat_file(path)
+dataset = DataHelper.prepare_data(data_dir)
 
 # ====================== SEKCJA 2: PRZYGOTOWANIE DANYCH ==========================
 print("🔹 [2/5] Przygotowanie danych...")
