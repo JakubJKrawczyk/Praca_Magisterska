@@ -17,7 +17,7 @@ from DataHelper import DataHelper
 # ========================== SEKCJA 1: ŁADOWANIE DANYCH ==========================
 print("🔹 [1/5] Ładowanie danych...")
 
-data_dir = "EEG_data"
+data_dir = "EEG_preprocessed"
 data_files = [f for f in os.listdir(data_dir) if isfile(join(data_dir, f))]
 seed = 42
 
@@ -34,13 +34,7 @@ for file_idx, file in enumerate(data_files):
     print(f"Przetwarzanie pliku {file_idx + 1}/{len(data_files)}: {file}")
 
     # Tworzenie foldów walidacji krzyżowej z 5 oknami dla najkrótszego filmu
-    cv_folds = DataHelper.create_cv_datasets_per_film(
-        path,
-        num_folds=5,
-        num_windows=5,  # Najkrótszy film będzie miał 5 okien
-        overlap=0.5  # 50% nakładanie się okien
-    )
-    all_folds.extend(cv_folds)
+    DataHelper.load_processed_data_from_mat_file(path)
 
 # ====================== SEKCJA 2: PRZYGOTOWANIE DANYCH ==========================
 print("🔹 [2/5] Przygotowanie danych...")

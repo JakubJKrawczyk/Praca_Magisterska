@@ -1,9 +1,12 @@
-import random
+import os
 from operator import contains
+
+import mne
 import scipy.io as sio
 import torch
 from torch.utils.data import Dataset, TensorDataset, DataLoader
 import numpy as np
+
 
 # Mapowanie ID emocji na nazwy
 emotionsEnum = {
@@ -106,49 +109,37 @@ VideoIdToEmotionMap = {
 
 
 class FilmWindowDataset(Dataset):
-    def __init__(self, eeg_sequences, emotion_labels, num_windows=5, overlap=0.5):
+    def __init__(self, eeg_sequences_per_movie, emotion_labels, first_win_size=16, stride = 8, is_raw=False):
         """
-        Dataset tworzący okna czasowe dla filmów tak, by najkrótszy film miał dokładnie
-        określoną liczbę okien (domyślnie 5).
+        Dataset tworzący tensor okien czasowych dla każdego filmu z przesunięciem
 
         Args:
-            eeg_sequences: Lista tensorów o kształcie [time, bands, probes] dla każdego filmu
+            eeg_sequences_per_movie: Lista tensorów o kształcie [samples, bands, probes] albo [samples, raw_values] dla każdego filmu
             emotion_labels: Lista etykiet emocji odpowiadających każdemu filmowi
-            num_windows: Ile okien powinien mieć najkrótszy film (domyślnie 5)
-            overlap: Nakładanie się okien (domyślnie 50%)
+            first_win_size: rozmiar pierwszego okna
+            overlap: Nakładanie się okien, zamienione na int (domyślnie 20%)
         """
-        self.eeg_sequences = eeg_sequences
+        self.eeg_sequences = eeg_sequences_per_movie
         self.emotion_labels = emotion_labels
-        self.num_windows = num_windows
-        self.overlap = overlap
+        self.first_window_size = first_win_size
+        self.stride = stride
+        self.is_raw = is_raw
+        self.data_mean = np.mean(eeg_sequences_per_movie)
 
-        # Znajdź najkrótszy film
-        min_sequence_length = min([seq.shape[0] for seq in eeg_sequences])
-
-        # Oblicz rozmiar okna tak, aby najkrótszy film miał dokładnie num_windows okien
-        # Dla nakładania 50% i 5 okien potrzebujemy 3 pełne długości okna
-        # (1 pełne okno + 4 * 0.5 okna = 3 okna)
-        effective_segments = 1 + (num_windows - 1) * (1 - overlap)
-        self.window_size = int(min_sequence_length / effective_segments)
-
-        # Oblicz przesunięcie okna na podstawie nakładania
-        self.stride = int(self.window_size * (1 - overlap))
-
-        print(f"Najkrótszy film: {min_sequence_length} próbek")
-        print(f"Używanie okna o wielkości {self.window_size} próbek z przesunięciem {self.stride} próbek")
-        print(f"Najkrótszy film będzie miał {num_windows} okien")
+        print(f"Pierwsze okno ma rozmiar {self.first_window_size} próbek z przesunięciem {self.stride} próbek")
 
         # Przygotuj indeksy filmów i oblicz liczbę okien dla każdego filmu
         self.film_indices = []
         self.windows_per_film = []
-
-        for film_idx, sequence in enumerate(eeg_sequences):
-            seq_length = sequence.shape[0]  # Długość filmu
-
-            # Oblicz liczbę możliwych okien dla tego filmu
-            num_film_windows = max(1, (seq_length - self.window_size) // self.stride + 1)
-            self.windows_per_film.append(num_film_windows)
-            self.film_indices.append(film_idx)
+        for movie_idx, sequence in enumerate(self.eeg_sequences):
+            window_step = self.first_window_size
+            self.windows_per_film[movie_idx] = 0
+            while window_step < len(eeg_sequences_per_movie):
+                self.windows_per_film[movie_idx] += 1
+                window_step += self.stride
+            if len(eeg_sequences_per_movie[window_step:len(self.eeg_sequences)]) > 0:
+                self.windows_per_film[movie_idx] += 1
+            self.film_indices.append(movie_idx)
 
         total_windows = sum(self.windows_per_film)
         print(f"Załadowano {len(self.film_indices)} filmów z łączną liczbą {total_windows} okien")
@@ -168,36 +159,34 @@ class FilmWindowDataset(Dataset):
             Tensor okien o kształcie [num_windows, bands, window_size, probes]
             Etykieta emocji dla tego filmu
         """
+
         sequence = self.eeg_sequences[film_idx]
         seq_length = sequence.shape[0]
+        data_mean = np.mean(sequence)
 
         # Lista okien dla tego filmu
         windows = []
-
+        number_of_windows = self.windows_per_film[film_idx]
         # Generuj okna z odpowiednim nakładaniem
-        for window_start in range(0, seq_length - self.window_size + 1, self.stride):
-            window_end = window_start + self.window_size
+        for window_ids in range(number_of_windows):
+
+            window_step = self.first_window_size
+            # jezeli ostatnie okno jest niepelne to wypelnij je wartosciami usrednionymi
+            if window_step > seq_length-1:
+                for new_val_index in range(window_step - seq_length-1):
+                    sequence[new_val_index] = data_mean
 
             # Wytnij okno czasowe
-            window = sequence[window_start:window_end]
-
-            # Zmień format na [bands, time, probes]
-            window = window.permute(1, 0, 2)
+            window = sequence[window_step - self.first_window_size:window_step]
 
             windows.append(window)
+            window_step += self.stride
 
         # Stack wszystkich okien dla danego filmu
         if windows:
             film_windows = torch.stack(windows)
         else:
-            # Awaryjnie, jeśli nie można utworzyć żadnego pełnego okna
-            print(f"Ostrzeżenie: Film {film_idx} nie ma wystarczającej liczby próbek")
-            # Utwórz jedno okno z dostępnych danych, uzupełnione zerami
-            padded_window = torch.zeros((self.window_size, sequence.shape[1], sequence.shape[2]),
-                                        device=sequence.device)
-            padded_window[:min(seq_length, self.window_size)] = sequence[:min(seq_length, self.window_size)]
-            padded_window = padded_window.permute(1, 0, 2)
-            film_windows = padded_window.unsqueeze(0)
+            raise Exception("Nieudana próba utworzenia okien dla filmu o podanym indeksie")
 
         # Zwróć okna i etykietę dla filmu
         return film_windows, self.emotion_labels[film_idx]
@@ -212,11 +201,66 @@ class FilmWindowDataset(Dataset):
         Returns:
             Tensor okien dla filmu i etykietę emocji
         """
+        if idx > len(self.film_indices) or idx < 0:
+            raise ValueError(f"Film {idx}  doesn't exist")
+
         film_idx = self.film_indices[idx]
         return self.get_film_windows(film_idx)
 
 
 class DataHelper:
+    @staticmethod
+    def load_processed_data_from_mat_file(file_path, lds=False):
+        mat_data = sio.loadmat(file_path)
+
+        if lds:
+            processed = {}
+            for key in mat_data.keys():
+                if contains(key, "LDS"):
+                    processed[key] = mat_data[key]
+            return processed
+        else:
+            processed = {}
+            for key in mat_data.keys():
+                if contains(key, "de") and not contains(key, "LDS") and not contains(key, "__header__"):
+                    processed[key] = mat_data[key]
+            return processed
+
+    @staticmethod
+    def load_raw_data_from_file(file_path):
+        # Load the CNT file
+        raw = mne.io.read_raw_cnt(file_path, preload=True)
+
+        # Display basic information about the dataset
+        print(raw.info)
+
+        # Plot the raw data (optional)
+        raw.plot()
+
+        # Access the data as a NumPy array
+        data, times = raw.get_data(return_times=True)
+
+        print(data.shape)
+
+    @staticmethod
+    def prepare_data(data_dir_file):
+        files = os.listdir(data_dir_file)
+        data = []
+        data_to_emotion_idx = []
+        if all(s.endswith(".mat") for s in files):
+            for idx, mat in enumerate(files):
+                data.append(DataHelper.load_processed_data_from_mat_file(data_dir_file + mat))
+        elif all(s.endswith(".cnt") for s in files):
+            for cnt in files:
+                data.append(DataHelper.load_raw_data_from_file(data_dir_file + cnt))
+        else:
+            raise ValueError("Obecny rodzaj rozszerzenia w docelowym folderze jest nieobsługiwany")
+
+
+
+
+
+
     @staticmethod
     def normalize_de_features(features):
         """
@@ -240,33 +284,6 @@ class DataHelper:
 
         # Reshape z powrotem do [samples, bands, electrodes]
         return normalized.reshape(features.shape)
-
-    @staticmethod
-    def load_mat_file(file_path, lds=False):
-        """
-        Wczytuje dane z pliku .mat.
-
-        Args:
-            file_path (str): Ścieżka do pliku .mat
-            lds (bool): Czy filtrować tylko klucze zawierające "LDS"
-
-        Returns:
-            dict: Słownik zawierający dane z pliku .mat
-        """
-        mat_data = sio.loadmat(file_path)
-
-        if lds:
-            processed = {}
-            for key in mat_data.keys():
-                if contains(key, "LDS"):
-                    processed[key] = mat_data[key]
-            return processed
-        else:
-            processed = {}
-            for key in mat_data.keys():
-                if contains(key, "de") and not contains(key, "LDS") and not contains(key, "__header__"):
-                    processed[key] = mat_data[key]
-            return processed
 
     @staticmethod
     def print_mat_content(mat_data):
@@ -397,7 +414,7 @@ class DataHelper:
         dataset = FilmWindowDataset(
             eeg_sequences,
             emotion_labels,
-            num_windows=num_windows,  # Najkrótszy film będzie miał 5 okien
+            first_win_size=num_windows,  # Najkrótszy film będzie miał 5 okien
             overlap=0.5  # 50% nakładania się
         )
 
@@ -463,12 +480,12 @@ class DataHelper:
             # Stwórz datasety
             train_dataset = FilmWindowDataset(
                 train_sequences, train_labels,
-                num_windows=num_windows, overlap=overlap
+                first_win_size=num_windows, overlap=overlap
             )
 
             val_dataset = FilmWindowDataset(
                 val_sequences, val_labels,
-                num_windows=num_windows, overlap=overlap
+                first_win_size=num_windows, overlap=overlap
             )
 
             # Stwórz dataloadery
