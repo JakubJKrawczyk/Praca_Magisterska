@@ -134,7 +134,7 @@ class FilmWindowDataset(Dataset):
         for movie_idx, sequence in enumerate(self.eeg_sequences):
             window_step = self.first_window_size
             self.windows_per_film[movie_idx] = 0
-            #TODO: zamienic dataset dla wszystkich filmow na taki per 1 film
+            #TODO: zamienic dataset dla wszystkich filmow na taki per 1 film i zacząć debugować architekture
             while window_step < len(eeg_sequences_per_movie):
                 self.windows_per_film[movie_idx] += 1
                 window_step += self.stride
