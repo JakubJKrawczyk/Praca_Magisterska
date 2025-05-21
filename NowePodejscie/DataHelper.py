@@ -124,7 +124,7 @@ class FilmWindowDataset(Dataset):
         self.first_window_size = first_win_size
         self.stride = stride
         self.is_raw = is_raw
-        self.data_mean = np.mean(eeg_sequences_per_movie)
+        self.data_mean = np.mean(np.concatenate([m.flatten() for m in eeg_sequences_per_movie]))
 
         print(f"Pierwsze okno ma rozmiar {self.first_window_size} próbek z przesunięciem {self.stride} próbek")
 
@@ -134,6 +134,7 @@ class FilmWindowDataset(Dataset):
         for movie_idx, sequence in enumerate(self.eeg_sequences):
             window_step = self.first_window_size
             self.windows_per_film[movie_idx] = 0
+            #TODO: zamienic dataset dla wszystkich filmow na taki per 1 film
             while window_step < len(eeg_sequences_per_movie):
                 self.windows_per_film[movie_idx] += 1
                 window_step += self.stride
@@ -246,14 +247,17 @@ class DataHelper:
     def prepare_data(data_dir_file):
         files = os.listdir(data_dir_file)
         data = []
-        data_to_emotion_idx = [0 for i in range(len(files))]
+        data_to_emotion_idx = []
         if all(s.endswith(".mat") for s in files):
-            for idx, mat in enumerate(files):
-                data.append(DataHelper.load_processed_data_from_mat_file(os.path.join(data_dir_file, mat)))
-                data_to_emotion_idx[idx] = VideoIdToEmotionMap[idx+1]
+            # for idx, mat in enumerate(files):
+            file_data = dict( list( DataHelper.load_processed_data_from_mat_file(os.path.join(data_dir_file, files[0])).items() )[3:] )
+            for idv, (key, value) in enumerate(file_data.items()):
+                if key.startswith("__"):
+                    continue
+                data.append(value.T)
+                data_to_emotion_idx.append(VideoIdToEmotionMap[int(key)])
 
 
-                #TODO: zmodyfikować wczytanbie żeby każdy plik wideo wczytywał osobno a nie per file w trybioe Dict
             return FilmWindowDataset(data, data_to_emotion_idx, 128, 16, True)
         elif all(s.endswith(".cnt") for s in files):
             for cnt in files:
